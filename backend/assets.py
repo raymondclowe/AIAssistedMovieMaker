@@ -133,6 +133,86 @@ class AssetManager:
         self.conn.commit()
         return cursor.lastrowid
 
+    def store_asset_from_file(
+        self,
+        file_obj,
+        filename: str,
+        project_id: int,
+        meta: Optional[dict] = None,
+        chunk_size: int = 8192
+    ) -> int:
+        """Store an asset from a file-like object with streaming and hash-based deduplication.
+
+        This method reads the file in chunks to avoid loading large files entirely into memory.
+
+        Args:
+            file_obj: File-like object (e.g., Streamlit UploadedFile).
+            filename: Original filename (for extension).
+            project_id: Project ID.
+            meta: Optional metadata dictionary.
+            chunk_size: Size of chunks to read at a time (default 8KB).
+
+        Returns:
+            Asset ID.
+        """
+        # Get file extension
+        suffix = Path(filename).suffix or ".bin"
+
+        # Create a temp file to stream into while computing hash
+        import tempfile
+        import shutil
+
+        hasher = hashlib.sha256()
+        total_size = 0
+
+        # Stream the file to a temporary location while computing hash
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+            tmp_path = Path(tmp_file.name)
+            while True:
+                chunk = file_obj.read(chunk_size)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+                tmp_file.write(chunk)
+                total_size += len(chunk)
+
+        file_hash = hasher.hexdigest()
+
+        # Check if asset already exists
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id FROM assets WHERE hash = ?", (file_hash,))
+        existing = cursor.fetchone()
+        if existing:
+            # Clean up temp file and return existing asset
+            tmp_path.unlink()
+            return existing[0]
+
+        # Move temp file to assets directory
+        dest = self.assets_dir / f"{file_hash}{suffix}"
+        if not dest.exists():
+            shutil.move(str(tmp_path), str(dest))
+        else:
+            tmp_path.unlink()
+
+        # Determine MIME type
+        mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+        # Insert metadata row
+        cursor.execute(
+            """INSERT INTO assets (project_id, hash, path, mime_type, size_bytes, meta_json)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                project_id,
+                file_hash,
+                str(dest.relative_to(self.project_root)),
+                mime_type,
+                total_size,
+                json.dumps(meta) if meta else None
+            )
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
     def get_asset(self, asset_id: int) -> Optional[dict]:
         """Get asset metadata by ID.
 
