@@ -61,7 +61,12 @@ def init_session_state():
         st.session_state.openrouter_key_input = ""
     if "replicate_key_input" not in st.session_state:
         st.session_state.replicate_key_input = ""
-    # Concept editing state
+    # Generic editing state (for any block)
+    if "editing_block_id" not in st.session_state:
+        st.session_state.editing_block_id = None
+    if "block_version_index" not in st.session_state:
+        st.session_state.block_version_index = {}
+    # Legacy concept editing state (kept for backward compatibility)
     if "editing_concept_id" not in st.session_state:
         st.session_state.editing_concept_id = None
     if "concept_version_index" not in st.session_state:
@@ -82,11 +87,16 @@ def get_or_create_default_project():
         # Create default project
         project_id = db.create_project("My Movie", str(default_project_dir))
         # Create tabs for data storage (internal, not shown as UI tabs)
-        tab_names = ["Story", "Design", "Shooting", "Generate"]
+        tab_names = ["Story", "Design", "Shooting", "Generate", "CreativeNotes"]
         for i, tab_name in enumerate(tab_names):
             db.create_tab(project_id, tab_name, i)
     else:
         project_id = projects[0]["id"]
+        # Ensure CreativeNotes tab exists for existing projects
+        tabs = db.get_tabs(project_id)
+        tab_names = [t["name"] for t in tabs]
+        if "CreativeNotes" not in tab_names:
+            db.create_tab(project_id, "CreativeNotes", len(tabs))
 
     return db, project_id, default_project_dir
 
@@ -242,6 +252,11 @@ def render_sidebar():
                         st.session_state.ai.set_video_model(selected_video)
 
         st.markdown("---")
+        
+        # Creative Notes section
+        render_creative_notes_section()
+
+        st.markdown("---")
 
         # Help section
         with st.expander("ℹ️ Help"):
@@ -263,6 +278,7 @@ def render_sidebar():
             - Generate stills first to save costs
             - Switch to Final mode for your best shots
             - Use the Notes feature to refine AI-generated content
+            - Save creative ideas in Creative Notes for later use
             """)
 
 
@@ -273,6 +289,215 @@ def get_tab_by_name(name: str) -> Optional[dict]:
         if tab["name"] == name:
             return tab
     return None
+
+
+def get_creative_notes_for_category(category: str) -> list:
+    """Get creative notes for a specific category (e.g., 'scene', 'dialogue', 'shot')."""
+    notes_tab = get_tab_by_name("CreativeNotes")
+    if not notes_tab:
+        return []
+    blocks = st.session_state.db.get_blocks_by_tab(notes_tab["id"])
+    return [b for b in blocks if b["type"] == f"note_{category}" and "used" not in (b.get("tags") or [])]
+
+
+def render_creative_notes_selector(category: str, form_key: str) -> Optional[str]:
+    """Render a selector for creative notes that can be incorporated into AI prompts.
+    
+    Returns the selected note content or None if no note selected.
+    """
+    notes = get_creative_notes_for_category(category)
+    if not notes:
+        return None
+    
+    st.markdown("**📌 Include Creative Note:**")
+    options = [{"id": None, "content": "-- No note --"}] + notes
+    selected = st.selectbox(
+        "Select a saved idea to include",
+        options=options,
+        format_func=lambda x: x["content"][:60] + "..." if x["id"] else "-- No note --",
+        key=f"note_select_{form_key}"
+    )
+    if selected and selected.get("id"):
+        return selected["content"]
+    return None
+
+
+def render_block_with_feedback(block: dict, block_type_name: str, revision_prompt_template: str, 
+                                source_content: str = "", extra_context: str = ""):
+    """Render a block with edit, delete, and AI revision capabilities.
+    
+    Args:
+        block: The block dict from the database
+        block_type_name: Human-readable name for the block type (e.g., "Plot Outline")
+        revision_prompt_template: Template for revision prompt with {content} and {notes} placeholders
+        source_content: Original source content if available
+        extra_context: Additional context to include in revision prompt
+    """
+    block_id = block["id"]
+    history = st.session_state.db.get_history(block_id)
+    
+    # Get version history
+    content_history = [
+        h for h in history 
+        if h["action"] == "create" or (h["action"] == "edit" and h.get("payload", {}).get("new_content"))
+    ]
+    total_versions = len(content_history) if content_history else 1
+    
+    # Get current version index
+    version_key = f"version_{block_id}"
+    if version_key not in st.session_state.block_version_index:
+        st.session_state.block_version_index[version_key] = 0
+    current_version_idx = st.session_state.block_version_index[version_key]
+    
+    # Determine which content to show
+    if current_version_idx == 0:
+        display_content = block["content"]
+    else:
+        if current_version_idx > 0 and current_version_idx <= len(content_history):
+            payload = content_history[current_version_idx - 1].get("payload", {})
+            display_content = payload.get("old_content") or payload.get("content") or block["content"]
+        else:
+            display_content = block["content"]
+    
+    # Version navigation
+    if total_versions > 1:
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col1:
+            if st.button("⬅️ Older", key=f"older_{block_id}", disabled=current_version_idx >= total_versions - 1):
+                st.session_state.block_version_index[version_key] = current_version_idx + 1
+                st.rerun()
+        with col2:
+            st.caption(f"Version {total_versions - current_version_idx} of {total_versions}")
+        with col3:
+            if st.button("Newer ➡️", key=f"newer_{block_id}", disabled=current_version_idx <= 0):
+                st.session_state.block_version_index[version_key] = current_version_idx - 1
+                st.rerun()
+    
+    # Check if in edit mode
+    is_editing = st.session_state.editing_block_id == block_id
+    
+    if is_editing:
+        # Editable text area
+        edited_content = st.text_area(
+            f"Edit {block_type_name}",
+            value=display_content,
+            height=300,
+            key=f"edit_area_{block_id}"
+        )
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("💾 Save Edit", key=f"save_edit_{block_id}"):
+                st.session_state.db.update_block(block_id, content=edited_content)
+                st.session_state.editing_block_id = None
+                st.session_state.block_version_index[version_key] = 0
+                st.success(f"{block_type_name} updated!")
+                st.rerun()
+        with col2:
+            if st.button("❌ Cancel", key=f"cancel_edit_{block_id}"):
+                st.session_state.editing_block_id = None
+                st.rerun()
+    else:
+        # Display content
+        st.markdown(display_content)
+        
+        # Action buttons
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✏️ Edit", key=f"edit_{block_id}"):
+                st.session_state.editing_block_id = block_id
+                st.rerun()
+        with col2:
+            if st.button("🗑️ Delete", key=f"del_{block_id}"):
+                st.session_state.db.delete_block(block_id)
+                st.rerun()
+    
+    # Feedback/Notes section (always visible when not editing)
+    if not is_editing:
+        st.markdown("---")
+        st.markdown("**📝 Refine with Notes**")
+        st.caption(f"Add notes to guide AI revision of this {block_type_name.lower()}")
+        
+        with st.form(f"notes_form_{block_id}"):
+            notes = st.text_area(
+                "Your Notes",
+                height=100,
+                placeholder="e.g., Make it more dramatic, add more detail about the setting, change the tone...",
+                key=f"notes_{block_id}"
+            )
+            
+            if st.form_submit_button("🔄 Revise with AI", use_container_width=True):
+                if notes:
+                    with st.spinner(f"Revising {block_type_name.lower()} based on your notes..."):
+                        # Build the revision prompt
+                        revision_prompt = revision_prompt_template.format(
+                            source=source_content if source_content else "Not provided",
+                            content=display_content,
+                            notes=notes,
+                            extra_context=extra_context
+                        )
+                        revised = st.session_state.ai.llm_generate_sync(revision_prompt)
+                        st.session_state.db.update_block(block_id, content=revised)
+                        st.session_state.block_version_index[version_key] = 0
+                        st.success(f"{block_type_name} revised!")
+                        st.rerun()
+                else:
+                    st.warning("Please enter some notes to guide the revision.")
+
+
+# =============================================================================
+# CREATIVE NOTES SIDEBAR
+# =============================================================================
+
+def render_creative_notes_section():
+    """Render the Creative Notes section in the sidebar."""
+    notes_tab = get_tab_by_name("CreativeNotes")
+    if not notes_tab:
+        return
+    
+    with st.expander("💡 Creative Notes", expanded=False):
+        st.caption("Capture ideas for later use in the workflow")
+        
+        # Quick add form
+        with st.form("quick_note", clear_on_submit=True):
+            note_category = st.selectbox(
+                "Category",
+                options=["scene", "dialogue", "shot", "character", "location", "visual", "general"],
+                help="What type of idea is this?"
+            )
+            note_content = st.text_area(
+                "Your Idea",
+                height=80,
+                placeholder="A specific line of dialogue, a shot description, a scene idea..."
+            )
+            if st.form_submit_button("💾 Save Note", use_container_width=True):
+                if note_content:
+                    st.session_state.db.add_block(notes_tab["id"], f"note_{note_category}", note_content)
+                    st.success("Note saved!")
+                    st.rerun()
+        
+        # Display existing notes
+        blocks = st.session_state.db.get_blocks_by_tab(notes_tab["id"])
+        if blocks:
+            st.markdown("---")
+            st.caption("**Saved Ideas:**")
+            for block in blocks:
+                category = block["type"].replace("note_", "")
+                tags = block.get("tags") or []
+                used_marker = " ✅" if "used" in tags else ""
+                with st.container(border=True):
+                    st.caption(f"📌 {category.title()}{used_marker}")
+                    st.markdown(block["content"][:100] + ("..." if len(block["content"]) > 100 else ""))
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("🗑️", key=f"del_note_{block['id']}"):
+                            st.session_state.db.delete_block(block["id"])
+                            st.rerun()
+                    with col2:
+                        if "used" not in tags:
+                            if st.button("✓", key=f"mark_used_{block['id']}", help="Mark as used"):
+                                new_tags = tags + ["used"]
+                                st.session_state.db.update_block(block["id"], tags=new_tags)
+                                st.rerun()
 
 
 # =============================================================================
@@ -515,11 +740,18 @@ def render_plot_section(tab_id: int):
         source_block = st.selectbox(
             "Select source concept:",
             options=concepts,
-            format_func=lambda x: f"{x['content'][:60]}..."
+            format_func=lambda x: f"{x['content'][:60]}...",
+            key="plot_source_concept"
         )
+        
+        # Option to include a creative note
+        scene_note = render_creative_notes_selector("scene", "plot_gen")
+        
         if st.button("✨ Generate Plot Outline"):
             with st.spinner("Generating plot outline..."):
                 prompt = f"Write a detailed 5-act plot outline for a movie based on this concept:\n\n{source_block['content']}"
+                if scene_note:
+                    prompt += f"\n\nIncorporate this specific idea from the creator:\n{scene_note}"
                 outline = st.session_state.ai.llm_generate_sync(prompt)
                 block_id = st.session_state.db.add_block(tab_id, "outline", outline)
                 st.session_state.db.add_dependency(source_block["id"], block_id, "concept_to_plot")
@@ -542,16 +774,43 @@ def render_plot_section(tab_id: int):
                 st.success("Plot point added!")
                 st.rerun()
     
-    # Display existing plots
+    # Display existing plots with feedback mechanism
     if plots:
         st.markdown("---")
         st.subheader("📑 Plot Structure")
+        
+        # Define revision prompt template for plots
+        plot_revision_template = """Revise the following plot element based on the creator's notes.
+
+ORIGINAL SOURCE CONCEPT:
+{source}
+
+CURRENT PLOT CONTENT:
+{content}
+
+CREATOR'S NOTES/FEEDBACK:
+{notes}
+
+Please revise the plot to incorporate the feedback while maintaining story coherence. Output only the revised plot."""
+        
         for block in plots:
+            # Find source concept for this plot
+            source_content = ""
+            deps = st.session_state.db.get_reverse_dependencies(block["id"])
+            for dep in deps:
+                if dep.get("type") == "concept_to_plot":
+                    src_block = st.session_state.db.get_block(dep["src_block_id"])
+                    if src_block:
+                        source_content = src_block["content"]
+                        break
+            
             with st.expander(f"{block['type'].upper()}: {block['content'][:60]}...", expanded=True):
-                st.markdown(block["content"])
-                if st.button("🗑️ Delete", key=f"del_plot_{block['id']}"):
-                    st.session_state.db.delete_block(block["id"])
-                    st.rerun()
+                render_block_with_feedback(
+                    block=block,
+                    block_type_name=f"Plot {block['type'].title()}",
+                    revision_prompt_template=plot_revision_template,
+                    source_content=source_content
+                )
 
 
 def render_screenplay_section(tab_id: int):
@@ -570,8 +829,14 @@ def render_screenplay_section(tab_id: int):
         source_block = st.selectbox(
             "Select plot point:",
             options=plots,
-            format_func=lambda x: f"{x['type'].upper()}: {x['content'][:50]}..."
+            format_func=lambda x: f"{x['type'].upper()}: {x['content'][:50]}...",
+            key="scene_source_plot"
         )
+        
+        # Option to include creative notes for scene or dialogue
+        scene_note = render_creative_notes_selector("scene", "scene_gen")
+        dialogue_note = render_creative_notes_selector("dialogue", "scene_dialogue_gen")
+        
         if st.button("✨ Generate Scene"):
             with st.spinner("Generating screenplay scene..."):
                 prompt = f"""Write a screenplay scene based on this plot point.
@@ -580,6 +845,10 @@ character names in caps, dialogue, and action descriptions.
 
 Plot point:
 {source_block['content']}"""
+                if scene_note:
+                    prompt += f"\n\nIncorporate this scene idea from the creator:\n{scene_note}"
+                if dialogue_note:
+                    prompt += f"\n\nInclude this specific dialogue from the creator:\n{dialogue_note}"
                 scene = st.session_state.ai.llm_generate_sync(prompt)
                 block_id = st.session_state.db.add_block(tab_id, "scene", scene)
                 st.session_state.db.add_dependency(source_block["id"], block_id, "plot_to_scene")
@@ -603,18 +872,43 @@ Plot point:
                 st.success("Scene added!")
                 st.rerun()
     
-    # Display scenes
+    # Display scenes with feedback mechanism
     if scenes:
         st.markdown("---")
         st.subheader("📑 Scenes")
+        
+        # Define revision prompt template for scenes
+        scene_revision_template = """Revise the following screenplay scene based on the creator's notes.
+
+ORIGINAL PLOT POINT:
+{source}
+
+CURRENT SCENE:
+{content}
+
+CREATOR'S NOTES/FEEDBACK:
+{notes}
+
+Please revise the scene to incorporate the feedback while maintaining proper screenplay format. Output only the revised scene."""
+        
         for i, block in enumerate(scenes, 1):
+            # Find source plot for this scene
+            source_content = ""
+            deps = st.session_state.db.get_reverse_dependencies(block["id"])
+            for dep in deps:
+                if dep.get("type") == "plot_to_scene":
+                    src_block = st.session_state.db.get_block(dep["src_block_id"])
+                    if src_block:
+                        source_content = src_block["content"]
+                        break
+            
             with st.expander(f"Scene {i}: {block['content'][:50]}...", expanded=False):
-                st.text(block["content"])
-                col1, col2 = st.columns([1, 5])
-                with col1:
-                    if st.button("🗑️ Delete", key=f"del_scene_{block['id']}"):
-                        st.session_state.db.delete_block(block["id"])
-                        st.rerun()
+                render_block_with_feedback(
+                    block=block,
+                    block_type_name="Scene",
+                    revision_prompt_template=scene_revision_template,
+                    source_content=source_content
+                )
 
 
 # =============================================================================
@@ -659,6 +953,9 @@ def render_characters_section(tab_id: int):
     blocks = st.session_state.db.get_blocks_by_tab(tab_id)
     characters = [b for b in blocks if b["type"] == "character"]
     
+    # Option to include creative note for character
+    char_note = render_creative_notes_selector("character", "char_gen")
+    
     # Add new character
     with st.form("new_character"):
         col1, col2 = st.columns(2)
@@ -688,22 +985,35 @@ def render_characters_section(tab_id: int):
                         prompt = f"Create a detailed character profile for a movie character named {name} ({role}). Include physical description, personality, background, and motivation."
                         if description:
                             prompt += f"\n\nAdditional context: {description}"
+                        if char_note:
+                            prompt += f"\n\nIncorporate this character idea from the creator:\n{char_note}"
                         generated = st.session_state.ai.llm_generate_sync(prompt)
                         st.session_state.db.add_block(tab_id, "character", generated)
                         st.success("Character generated!")
                         st.rerun()
     
-    # Display characters
+    # Display characters with feedback mechanism
     if characters:
         st.markdown("---")
-        cols = st.columns(2)
-        for i, block in enumerate(characters):
-            with cols[i % 2]:
-                with st.container(border=True):
-                    st.markdown(block["content"])
-                    if st.button("🗑️ Delete", key=f"del_char_{block['id']}"):
-                        st.session_state.db.delete_block(block["id"])
-                        st.rerun()
+        
+        # Define revision prompt template for characters
+        char_revision_template = """Revise the following character profile based on the creator's notes.
+
+CURRENT CHARACTER:
+{content}
+
+CREATOR'S NOTES/FEEDBACK:
+{notes}
+
+Please revise the character to incorporate the feedback while maintaining consistency. Output only the revised character profile."""
+        
+        for block in characters:
+            with st.expander(f"👤 {block['content'].split(chr(10))[0]}", expanded=False):
+                render_block_with_feedback(
+                    block=block,
+                    block_type_name="Character",
+                    revision_prompt_template=char_revision_template
+                )
 
 
 def render_locations_section(tab_id: int):
@@ -713,6 +1023,9 @@ def render_locations_section(tab_id: int):
     
     blocks = st.session_state.db.get_blocks_by_tab(tab_id)
     locations = [b for b in blocks if b["type"] == "location"]
+    
+    # Option to include creative note for location
+    loc_note = render_creative_notes_selector("location", "loc_gen")
     
     with st.form("new_location"):
         name = st.text_input("Location Name", placeholder="Train Dining Car")
@@ -737,19 +1050,35 @@ def render_locations_section(tab_id: int):
                         prompt = f"Create a detailed location description for a movie setting: {name}. Include visual details, atmosphere, mood, and key areas."
                         if description:
                             prompt += f"\n\nAdditional context: {description}"
+                        if loc_note:
+                            prompt += f"\n\nIncorporate this location idea from the creator:\n{loc_note}"
                         generated = st.session_state.ai.llm_generate_sync(prompt)
                         st.session_state.db.add_block(tab_id, "location", generated)
                         st.success("Location generated!")
                         st.rerun()
     
+    # Display locations with feedback mechanism
     if locations:
         st.markdown("---")
+        
+        # Define revision prompt template for locations
+        loc_revision_template = """Revise the following location description based on the creator's notes.
+
+CURRENT LOCATION:
+{content}
+
+CREATOR'S NOTES/FEEDBACK:
+{notes}
+
+Please revise the location to incorporate the feedback while maintaining consistency. Output only the revised location description."""
+        
         for block in locations:
             with st.expander(block["content"].split('\n')[0], expanded=False):
-                st.markdown(block["content"])
-                if st.button("🗑️ Delete", key=f"del_loc_{block['id']}"):
-                    st.session_state.db.delete_block(block["id"])
-                    st.rerun()
+                render_block_with_feedback(
+                    block=block,
+                    block_type_name="Location",
+                    revision_prompt_template=loc_revision_template
+                )
 
 
 def render_props_section(tab_id: int):
@@ -795,6 +1124,9 @@ def render_style_section(tab_id: int):
     blocks = st.session_state.db.get_blocks_by_tab(tab_id)
     styles = [b for b in blocks if b["type"] in ("style_guide", "color_palette", "mood", "visual_theme")]
     
+    # Option to include creative note for visual style
+    visual_note = render_creative_notes_selector("visual", "style_gen")
+    
     with st.form("new_style"):
         element_type = st.selectbox("Element Type", ["style_guide", "color_palette", "mood", "visual_theme"])
         content = st.text_area(
@@ -815,19 +1147,35 @@ def render_style_section(tab_id: int):
                 if content:
                     with st.spinner("Generating style guide..."):
                         prompt = f"Create a detailed art direction guide for a movie with this style: {content}. Include color palette, lighting, textures, and visual references."
+                        if visual_note:
+                            prompt += f"\n\nIncorporate this visual idea from the creator:\n{visual_note}"
                         generated = st.session_state.ai.llm_generate_sync(prompt)
                         st.session_state.db.add_block(tab_id, "style_guide", generated)
                         st.success("Style guide generated!")
                         st.rerun()
     
+    # Display styles with feedback mechanism
     if styles:
         st.markdown("---")
+        
+        # Define revision prompt template for style
+        style_revision_template = """Revise the following visual style guide based on the creator's notes.
+
+CURRENT STYLE:
+{content}
+
+CREATOR'S NOTES/FEEDBACK:
+{notes}
+
+Please revise the style guide to incorporate the feedback. Output only the revised style guide."""
+        
         for block in styles:
             with st.expander(f"{block['type'].replace('_', ' ').title()}", expanded=False):
-                st.markdown(block["content"])
-                if st.button("🗑️ Delete", key=f"del_style_{block['id']}"):
-                    st.session_state.db.delete_block(block["id"])
-                    st.rerun()
+                render_block_with_feedback(
+                    block=block,
+                    block_type_name="Style Guide",
+                    revision_prompt_template=style_revision_template
+                )
 
 
 # =============================================================================
@@ -875,8 +1223,13 @@ def render_shot_list_section(tab_id: int):
         source_scene = st.selectbox(
             "Select scene:",
             options=scenes,
-            format_func=lambda x: f"{x['content'][:60]}..."
+            format_func=lambda x: f"{x['content'][:60]}...",
+            key="shot_source_scene"
         )
+        
+        # Option to include creative note for shot
+        shot_note = render_creative_notes_selector("shot", "shot_breakdown_gen")
+        
         if st.button("✨ Generate Shot Breakdown"):
             with st.spinner("Breaking down scene into shots..."):
                 prompt = f"""Break down this screenplay scene into a list of individual shots.
@@ -889,6 +1242,8 @@ For each shot, provide:
 
 Scene:
 {source_scene['content']}"""
+                if shot_note:
+                    prompt += f"\n\nIncorporate this specific shot idea from the creator:\n{shot_note}"
                 shots = st.session_state.ai.llm_generate_sync(prompt)
                 block_id = st.session_state.db.add_block(tab_id, "shot_breakdown", shots)
                 st.session_state.db.add_dependency(source_scene["id"], block_id, "scene_to_shots")
@@ -897,19 +1252,46 @@ Scene:
     else:
         st.info("Add scenes in the Story phase first.")
     
-    # Display shot breakdowns
+    # Display shot breakdowns with feedback mechanism
     blocks = st.session_state.db.get_blocks_by_tab(tab_id)
     breakdowns = [b for b in blocks if b["type"] == "shot_breakdown"]
     
     if breakdowns:
         st.markdown("---")
         st.subheader("Shot Breakdowns")
+        
+        # Define revision prompt template for shot breakdowns
+        shot_revision_template = """Revise the following shot breakdown based on the creator's notes.
+
+ORIGINAL SCENE:
+{source}
+
+CURRENT SHOT BREAKDOWN:
+{content}
+
+CREATOR'S NOTES/FEEDBACK:
+{notes}
+
+Please revise the shot breakdown to incorporate the feedback. Output only the revised shot breakdown."""
+        
         for i, block in enumerate(breakdowns, 1):
+            # Find source scene
+            source_content = ""
+            deps = st.session_state.db.get_reverse_dependencies(block["id"])
+            for dep in deps:
+                if dep.get("type") == "scene_to_shots":
+                    src_block = st.session_state.db.get_block(dep["src_block_id"])
+                    if src_block:
+                        source_content = src_block["content"]
+                        break
+            
             with st.expander(f"Breakdown {i}", expanded=True):
-                st.markdown(block["content"])
-                if st.button("🗑️ Delete", key=f"del_breakdown_{block['id']}"):
-                    st.session_state.db.delete_block(block["id"])
-                    st.rerun()
+                render_block_with_feedback(
+                    block=block,
+                    block_type_name="Shot Breakdown",
+                    revision_prompt_template=shot_revision_template,
+                    source_content=source_content
+                )
 
 
 def render_cinematography_section(tab_id: int):
@@ -963,6 +1345,9 @@ def render_shot_cards_section(tab_id: int):
     blocks = st.session_state.db.get_blocks_by_tab(tab_id)
     shots = [b for b in blocks if b["type"] == "shot"]
     
+    # Option to include creative note for shot
+    shot_note = render_creative_notes_selector("shot", "shot_card_gen")
+    
     with st.form("new_shot"):
         description = st.text_area(
             "Shot Description",
@@ -995,20 +1380,36 @@ def render_shot_cards_section(tab_id: int):
                 if description:
                     with st.spinner("Generating shot description..."):
                         prompt = f"Create a detailed shot description for video generation: {description}. Include visual composition, camera angle, lighting, mood, and any motion."
+                        if shot_note:
+                            prompt += f"\n\nIncorporate this specific shot idea from the creator:\n{shot_note}"
                         generated = st.session_state.ai.llm_generate_sync(prompt)
                         st.session_state.db.add_block(tab_id, "shot", generated)
                         st.success("Shot description generated!")
                         st.rerun()
     
+    # Display shots with feedback mechanism
     if shots:
         st.markdown("---")
         st.subheader("🎬 Shot List")
+        
+        # Define revision prompt template for shots
+        shot_card_revision_template = """Revise the following shot description based on the creator's notes.
+
+CURRENT SHOT:
+{content}
+
+CREATOR'S NOTES/FEEDBACK:
+{notes}
+
+Please revise the shot description to incorporate the feedback. Output only the revised shot description."""
+        
         for i, block in enumerate(shots, 1):
             with st.expander(f"Shot {i}: {block['content'][:50]}...", expanded=False):
-                st.markdown(block["content"])
-                if st.button("🗑️ Delete", key=f"del_shot_{block['id']}"):
-                    st.session_state.db.delete_block(block["id"])
-                    st.rerun()
+                render_block_with_feedback(
+                    block=block,
+                    block_type_name="Shot Description",
+                    revision_prompt_template=shot_card_revision_template
+                )
 
 
 # =============================================================================
