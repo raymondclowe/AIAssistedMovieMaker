@@ -715,7 +715,7 @@ Jane watches as the Barista hurries away. She makes a note in her file.
 ## Motivation
 Finding the truth, no matter where it leads
 
-*Note: This is a placeholder character. Connect your OpenAI API key for AI-generated content.*"""
+*Note: This is a placeholder character. Connect your OpenRouter API key for AI-generated content.*"""
 
         elif "location" in prompt_lower:
             return """# Location Description
