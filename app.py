@@ -874,7 +874,6 @@ def render_generate_phase():
     tab = get_tab_by_name("Generate")
     if not tab:
         tab_id = st.session_state.db.create_tab(st.session_state.project_id, "Generate", 3)
-        tab = {"id": tab_id, "name": "Generate"}
     
     # Create subtabs
     gen_tabs = st.tabs(["🖼️ Generate", "📁 Assets", "📊 Review"])
