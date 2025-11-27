@@ -26,6 +26,13 @@ MEDIUM_PRICE_THRESHOLD = 0.01  # $0.01 per 1k tokens - below this is medium, abo
 # Model name patterns that indicate draft/fast models
 DRAFT_MODEL_PATTERNS = ["schnell", "turbo", "fast", "lite", "lightning"]
 
+# Popularity thresholds for Replicate model categorization
+# Video and image models are categorized by run_count since they don't have pricing info
+# Higher run counts indicate more popular/established models (medium tier)
+# Lower run counts include newer premium models (final tier)
+VIDEO_MEDIUM_RUN_COUNT_THRESHOLD = 100000  # Video models with >100k runs are medium tier
+IMAGE_MEDIUM_RUN_COUNT_THRESHOLD = 1000000  # Image models with >1M runs are medium tier
+
 
 def get_api_key(primary_key: str, fallback_key: str) -> Optional[str]:
     """Get API key from environment, checking both primary and fallback names.
@@ -315,7 +322,7 @@ class ReplicateProvider:
                 # For video models without clear draft patterns, split by popularity
                 # High run_count models go to medium, lower to final (premium/newer)
                 run_count = model.get("run_count", 0)
-                if run_count > 100000:
+                if run_count > VIDEO_MEDIUM_RUN_COUNT_THRESHOLD:
                     medium_models.append(model_info)
                 else:
                     final_models.append(model_info)
@@ -360,7 +367,7 @@ class ReplicateProvider:
                 # For image models without clear draft patterns, split by popularity
                 # High run_count models go to medium, lower to final (premium/newer)
                 run_count = model.get("run_count", 0)
-                if run_count > 1000000:
+                if run_count > IMAGE_MEDIUM_RUN_COUNT_THRESHOLD:
                     medium_models.append(model_info)
                 else:
                     final_models.append(model_info)

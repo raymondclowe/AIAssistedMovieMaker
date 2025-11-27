@@ -456,6 +456,22 @@ class Database:
             )
             return [dict(row._mapping) for row in result.fetchall()]
 
+    def get_reverse_dependencies(self, dst_block_id: int) -> list:
+        """Get all dependencies pointing to a destination block.
+
+        Args:
+            dst_block_id: Destination block ID.
+
+        Returns:
+            List of dependency dicts where this block is the destination.
+        """
+        with self.get_session() as session:
+            result = session.execute(
+                text("SELECT * FROM dependencies WHERE dst_block_id = :dst"),
+                {"dst": dst_block_id}
+            )
+            return [dict(row._mapping) for row in result.fetchall()]
+
     def get_history(self, block_id: int) -> list:
         """Get history for a block.
 

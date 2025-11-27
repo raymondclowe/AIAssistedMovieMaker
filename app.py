@@ -370,7 +370,11 @@ def render_concept_section(tab_id: int):
             history = st.session_state.db.get_history(block_id)
             
             # Get version history (filter for content-changing edits)
-            content_history = [h for h in history if h["action"] in ("create", "edit") and h.get("payload", {}).get("new_content") or h["action"] == "create"]
+            # Include 'create' actions and 'edit' actions that have new_content
+            content_history = [
+                h for h in history 
+                if h["action"] == "create" or (h["action"] == "edit" and h.get("payload", {}).get("new_content"))
+            ]
             total_versions = len(content_history) if content_history else 1
             
             # Get current version index for this block
@@ -383,8 +387,8 @@ def render_concept_section(tab_id: int):
             if current_version_idx == 0:
                 display_content = block["content"]
             else:
-                # Show historical version
-                if current_version_idx <= len(content_history):
+                # Show historical version (index > 0 means looking at older versions)
+                if current_version_idx > 0 and current_version_idx <= len(content_history):
                     payload = content_history[current_version_idx - 1].get("payload", {})
                     display_content = payload.get("old_content") or payload.get("content") or block["content"]
                 else:
@@ -449,16 +453,16 @@ def render_concept_section(tab_id: int):
                     st.markdown("**📝 Refine with Notes**")
                     st.caption("Add notes to guide AI revision of this concept")
                     
-                    # Get the original logline if available
+                    # Get the original logline if available (concept is the destination of the dependency)
                     original_logline = ""
-                    deps = st.session_state.db.get_dependencies(block_id)
+                    deps = st.session_state.db.get_reverse_dependencies(block_id)
                     for dep in deps:
                         if dep.get("type") == "logline_to_concept":
                             src_block = st.session_state.db.get_block(dep["src_block_id"])
                             if src_block:
                                 original_logline = src_block["content"]
                                 break
-                    # Also check reverse - concept depends on logline
+                    # Also check fallback - use first logline if no dependency found
                     if not original_logline and loglines:
                         original_logline = loglines[0]["content"]  # Use first logline as fallback
                     
