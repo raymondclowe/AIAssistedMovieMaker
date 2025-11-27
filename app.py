@@ -785,12 +785,22 @@ def render_asset_library_tab(tab_id: int):
             tags = [t.strip() for t in tags_input.split(",") if t.strip()]
             meta = {"tags": tags, "description": description}
 
-            asset_id = st.session_state.asset_manager.store_asset_from_bytes(
-                uploaded_file.read(),
-                uploaded_file.name,
-                st.session_state.project_id,
-                meta
-            )
+            # Use a streaming approach to avoid loading the entire file into memory
+            if hasattr(st.session_state.asset_manager, "store_asset_from_file"):
+                asset_id = st.session_state.asset_manager.store_asset_from_file(
+                    uploaded_file,
+                    uploaded_file.name,
+                    st.session_state.project_id,
+                    meta
+                )
+            else:
+                st.warning("Large file uploads may cause memory issues. Please contact the administrator to enable streaming uploads.")
+                asset_id = st.session_state.asset_manager.store_asset_from_bytes(
+                    uploaded_file.read(),
+                    uploaded_file.name,
+                    st.session_state.project_id,
+                    meta
+                )
             st.success(f"Asset uploaded! ID: {asset_id}")
             st.rerun()
 
