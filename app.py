@@ -61,6 +61,11 @@ def init_session_state():
         st.session_state.openrouter_key_input = ""
     if "replicate_key_input" not in st.session_state:
         st.session_state.replicate_key_input = ""
+    # Concept editing state
+    if "editing_concept_id" not in st.session_state:
+        st.session_state.editing_concept_id = None
+    if "concept_version_index" not in st.session_state:
+        st.session_state.concept_version_index = {}
 
 
 def get_or_create_default_project():
@@ -158,11 +163,13 @@ def render_sidebar():
                 st.error("❌ Image AI")
         
         # Mode selection
+        mode_options = ["draft", "medium", "final"]
+        current_mode_index = mode_options.index(st.session_state.ai_mode) if st.session_state.ai_mode in mode_options else 0
         mode = st.radio(
-            "Generation Mode",
-            options=["draft", "final"],
-            index=0 if st.session_state.ai_mode == "draft" else 1,
-            help="Draft: Fast & cheap models. Final: Best quality models.",
+            "Quality Mode",
+            options=mode_options,
+            index=current_mode_index,
+            help="Draft: Fast & cheap (Llama 3.2). Medium: Balanced (GPT-4o). Final: Best quality (Claude Sonnet).",
             horizontal=True
         )
         if mode != st.session_state.ai_mode:
@@ -246,14 +253,16 @@ def render_sidebar():
             4. Create **🎬 Shooting** script with shot cards
             5. **⚡ Generate** images and videos for each shot
             
-            **Generation Modes:**
-            - **Draft**: Fast, cheap models for iteration
-            - **Final**: Best quality models for production
+            **Quality Modes:**
+            - **Draft**: Fast, cheap models (Llama 3.2) for rapid iteration
+            - **Medium**: Balanced quality/cost (GPT-4o)
+            - **Final**: Best quality models (Claude Sonnet) for production
             
             **Tips:**
             - Use Draft mode while developing your story
             - Generate stills first to save costs
             - Switch to Final mode for your best shots
+            - Use the Notes feature to refine AI-generated content
             """)
 
 
@@ -301,13 +310,14 @@ def render_story_phase():
 
 
 def render_concept_section(tab_id: int):
-    """Render the Concept section."""
+    """Render the Concept section with feedback mechanism."""
     st.subheader("💡 Movie Concept")
     st.markdown("Start with your core movie idea - a logline or concept.")
     
     # Get existing concept blocks
     blocks = st.session_state.db.get_blocks_by_tab(tab_id)
-    concepts = [b for b in blocks if b["type"] in ("logline", "concept")]
+    loglines = [b for b in blocks if b["type"] == "logline"]
+    concepts = [b for b in blocks if b["type"] == "concept"]
     
     # Input for new concept
     with st.form("new_concept"):
@@ -331,22 +341,158 @@ def render_concept_section(tab_id: int):
             with st.spinner("Generating expanded concept..."):
                 prompt = f"Expand this movie concept into a detailed premise with genre, tone, themes, and potential story hooks:\n\n{content}"
                 expanded = st.session_state.ai.llm_generate_sync(prompt)
-                st.session_state.db.add_block(tab_id, "concept", expanded)
+                # Store the expanded concept with metadata linking to original
+                block_id = st.session_state.db.add_block(tab_id, "concept", expanded)
+                # Also save the original logline for reference if not already saved
+                logline_id = st.session_state.db.add_block(tab_id, "logline", content)
+                st.session_state.db.add_dependency(logline_id, block_id, "logline_to_concept")
                 st.success("Concept expanded!")
                 st.rerun()
 
-    # Display existing concepts
+    # Display saved loglines
+    if loglines:
+        st.markdown("---")
+        st.subheader("📝 Original Ideas")
+        for block in loglines:
+            with st.expander(f"💡 {block['content'][:60]}...", expanded=False):
+                st.markdown(block["content"])
+                if st.button("🗑️ Delete", key=f"del_logline_{block['id']}"):
+                    st.session_state.db.delete_block(block["id"])
+                    st.rerun()
+
+    # Display expanded concepts with feedback mechanism
     if concepts:
         st.markdown("---")
-        st.subheader("📝 Saved Concepts")
+        st.subheader("🎬 Expanded Concepts")
+        
         for block in concepts:
-            with st.expander(f"{block['type'].title()}: {block['content'][:60]}...", expanded=len(concepts) == 1):
-                st.markdown(block["content"])
-                col1, col2 = st.columns([1, 5])
-                with col1:
-                    if st.button("🗑️ Delete", key=f"del_concept_{block['id']}"):
-                        st.session_state.db.delete_block(block["id"])
-                        st.rerun()
+            block_id = block["id"]
+            history = st.session_state.db.get_history(block_id)
+            
+            # Get version history (filter for content-changing edits)
+            content_history = [h for h in history if h["action"] in ("create", "edit") and h.get("payload", {}).get("new_content") or h["action"] == "create"]
+            total_versions = len(content_history) if content_history else 1
+            
+            # Get current version index for this block
+            version_key = f"version_{block_id}"
+            if version_key not in st.session_state.concept_version_index:
+                st.session_state.concept_version_index[version_key] = 0  # 0 = current/latest
+            current_version_idx = st.session_state.concept_version_index[version_key]
+            
+            # Determine which content to show
+            if current_version_idx == 0:
+                display_content = block["content"]
+            else:
+                # Show historical version
+                if current_version_idx <= len(content_history):
+                    payload = content_history[current_version_idx - 1].get("payload", {})
+                    display_content = payload.get("old_content") or payload.get("content") or block["content"]
+                else:
+                    display_content = block["content"]
+            
+            with st.expander(f"🎬 {display_content[:60]}...", expanded=True):
+                # Version navigation
+                if total_versions > 1:
+                    col1, col2, col3 = st.columns([1, 2, 1])
+                    with col1:
+                        if st.button("⬅️ Older", key=f"older_{block_id}", disabled=current_version_idx >= total_versions - 1):
+                            st.session_state.concept_version_index[version_key] = current_version_idx + 1
+                            st.rerun()
+                    with col2:
+                        st.caption(f"Version {total_versions - current_version_idx} of {total_versions}")
+                    with col3:
+                        if st.button("Newer ➡️", key=f"newer_{block_id}", disabled=current_version_idx <= 0):
+                            st.session_state.concept_version_index[version_key] = current_version_idx - 1
+                            st.rerun()
+                
+                # Check if in edit mode
+                is_editing = st.session_state.editing_concept_id == block_id
+                
+                if is_editing:
+                    # Editable text area
+                    edited_content = st.text_area(
+                        "Edit Concept",
+                        value=display_content,
+                        height=300,
+                        key=f"edit_area_{block_id}"
+                    )
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("💾 Save Edit", key=f"save_edit_{block_id}"):
+                            st.session_state.db.update_block(block_id, content=edited_content)
+                            st.session_state.editing_concept_id = None
+                            st.session_state.concept_version_index[version_key] = 0  # Reset to latest
+                            st.success("Concept updated!")
+                            st.rerun()
+                    with col2:
+                        if st.button("❌ Cancel", key=f"cancel_edit_{block_id}"):
+                            st.session_state.editing_concept_id = None
+                            st.rerun()
+                else:
+                    # Display content
+                    st.markdown(display_content)
+                    
+                    # Action buttons
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        if st.button("✏️ Edit", key=f"edit_{block_id}"):
+                            st.session_state.editing_concept_id = block_id
+                            st.rerun()
+                    with col2:
+                        if st.button("🗑️ Delete", key=f"del_concept_{block_id}"):
+                            st.session_state.db.delete_block(block_id)
+                            st.rerun()
+                
+                # Feedback/Notes section (always visible when not editing)
+                if not is_editing:
+                    st.markdown("---")
+                    st.markdown("**📝 Refine with Notes**")
+                    st.caption("Add notes to guide AI revision of this concept")
+                    
+                    # Get the original logline if available
+                    original_logline = ""
+                    deps = st.session_state.db.get_dependencies(block_id)
+                    for dep in deps:
+                        if dep.get("type") == "logline_to_concept":
+                            src_block = st.session_state.db.get_block(dep["src_block_id"])
+                            if src_block:
+                                original_logline = src_block["content"]
+                                break
+                    # Also check reverse - concept depends on logline
+                    if not original_logline and loglines:
+                        original_logline = loglines[0]["content"]  # Use first logline as fallback
+                    
+                    with st.form(f"notes_form_{block_id}"):
+                        notes = st.text_area(
+                            "Your Notes",
+                            height=100,
+                            placeholder="e.g., Make the protagonist more mysterious, emphasize the noir elements, change the setting to 1940s...",
+                            key=f"notes_{block_id}"
+                        )
+                        
+                        if st.form_submit_button("🔄 Revise with AI", use_container_width=True):
+                            if notes:
+                                with st.spinner("Revising concept based on your notes..."):
+                                    revision_prompt = f"""Revise the following movie concept based on the creator's notes.
+
+ORIGINAL IDEA:
+{original_logline if original_logline else "Not provided"}
+
+CURRENT EXPANDED CONCEPT:
+{display_content}
+
+CREATOR'S NOTES/FEEDBACK:
+{notes}
+
+Please revise the expanded concept to incorporate the feedback while maintaining the core premise. Output only the revised concept."""
+                                    revised = st.session_state.ai.llm_generate_sync(revision_prompt)
+                                    # Update the block with the revised content
+                                    st.session_state.db.update_block(block_id, content=revised)
+                                    st.session_state.concept_version_index[version_key] = 0  # Reset to latest
+                                    st.success("Concept revised!")
+                                    st.rerun()
+                            else:
+                                st.warning("Please enter some notes to guide the revision.")
 
 
 def render_plot_section(tab_id: int):

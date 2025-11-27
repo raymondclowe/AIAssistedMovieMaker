@@ -16,9 +16,12 @@ import httpx
 
 
 # Price thresholds for model categorization (USD per token)
-# Models below DRAFT_PRICE_THRESHOLD are considered "draft" quality (cheap/fast)
-# Models above are considered "final" quality (expensive/best)
-DRAFT_PRICE_THRESHOLD = 0.001  # $0.001 per 1k tokens
+# Models are categorized into 3 tiers based on cost:
+# - Draft: Cheap/free models for rapid iteration
+# - Medium: Mid-range models for balanced quality/cost
+# - Final: Premium models for best quality
+DRAFT_PRICE_THRESHOLD = 0.001  # $0.001 per 1k tokens - below this is draft
+MEDIUM_PRICE_THRESHOLD = 0.01  # $0.01 per 1k tokens - below this is medium, above is final
 
 # Model name patterns that indicate draft/fast models
 DRAFT_MODEL_PATTERNS = ["schnell", "turbo", "fast", "lite", "lightning"]
@@ -105,14 +108,15 @@ class OpenRouterProvider:
             return []
     
     def get_models_by_category(self) -> Dict[str, List[Dict[str, Any]]]:
-        """Get models organized by cost category (draft vs final).
+        """Get models organized by cost category (draft, medium, final).
         
         Returns:
-            Dictionary with 'draft' and 'final' model lists.
+            Dictionary with 'draft', 'medium', and 'final' model lists.
         """
         models = self.get_models()
         
         draft_models = []
+        medium_models = []
         final_models = []
         
         for model in models:
@@ -128,17 +132,20 @@ class OpenRouterProvider:
                 "description": model.get("description", "")
             }
             
-            # Categorize by price threshold
+            # Categorize by price threshold into 3 tiers
             if prompt_price < DRAFT_PRICE_THRESHOLD:
                 draft_models.append(model_info)
+            elif prompt_price < MEDIUM_PRICE_THRESHOLD:
+                medium_models.append(model_info)
             else:
                 final_models.append(model_info)
         
         # Sort by price
         draft_models.sort(key=lambda x: x["prompt_price"])
+        medium_models.sort(key=lambda x: x["prompt_price"])
         final_models.sort(key=lambda x: x["prompt_price"])
         
-        return {"draft": draft_models, "final": final_models}
+        return {"draft": draft_models, "medium": medium_models, "final": final_models}
     
     def generate(
         self,
@@ -279,11 +286,12 @@ class ReplicateProvider:
         """Get video generation models organized by quality tier.
         
         Returns:
-            Dictionary with 'draft' and 'final' model lists.
+            Dictionary with 'draft', 'medium', and 'final' model lists.
         """
         models = self.get_models("text-to-video")
         
         draft_models = []
+        medium_models = []
         final_models = []
         
         for model in models:
@@ -304,23 +312,31 @@ class ReplicateProvider:
             if is_draft:
                 draft_models.append(model_info)
             else:
-                final_models.append(model_info)
+                # For video models without clear draft patterns, split by popularity
+                # High run_count models go to medium, lower to final (premium/newer)
+                run_count = model.get("run_count", 0)
+                if run_count > 100000:
+                    medium_models.append(model_info)
+                else:
+                    final_models.append(model_info)
         
         # Sort by popularity (run_count)
         draft_models.sort(key=lambda x: x.get("run_count", 0), reverse=True)
+        medium_models.sort(key=lambda x: x.get("run_count", 0), reverse=True)
         final_models.sort(key=lambda x: x.get("run_count", 0), reverse=True)
         
-        return {"draft": draft_models, "final": final_models}
+        return {"draft": draft_models, "medium": medium_models, "final": final_models}
     
     def get_image_models(self) -> Dict[str, List[Dict[str, Any]]]:
         """Get image generation models organized by quality tier.
         
         Returns:
-            Dictionary with 'draft' and 'final' model lists.
+            Dictionary with 'draft', 'medium', and 'final' model lists.
         """
         models = self.get_models("text-to-image")
         
         draft_models = []
+        medium_models = []
         final_models = []
         
         for model in models:
@@ -341,13 +357,20 @@ class ReplicateProvider:
             if is_draft:
                 draft_models.append(model_info)
             else:
-                final_models.append(model_info)
+                # For image models without clear draft patterns, split by popularity
+                # High run_count models go to medium, lower to final (premium/newer)
+                run_count = model.get("run_count", 0)
+                if run_count > 1000000:
+                    medium_models.append(model_info)
+                else:
+                    final_models.append(model_info)
         
         # Sort by popularity (run_count)
         draft_models.sort(key=lambda x: x.get("run_count", 0), reverse=True)
+        medium_models.sort(key=lambda x: x.get("run_count", 0), reverse=True)
         final_models.sort(key=lambda x: x.get("run_count", 0), reverse=True)
         
-        return {"draft": draft_models, "final": final_models}
+        return {"draft": draft_models, "medium": medium_models, "final": final_models}
     
     def _wait_for_prediction(self, prediction_url: str, timeout: int = 300) -> Dict[str, Any]:
         """Wait for a Replicate prediction to complete.
@@ -505,6 +528,13 @@ class AIOperations:
     - OpenRouter for text generation
     - Replicate for image and video generation
     """
+    
+    # Default models for each quality tier
+    DEFAULT_LLM_MODELS = {
+        "draft": "meta-llama/llama-3.2-3b-instruct:free",
+        "medium": "openai/gpt-4o",
+        "final": "anthropic/claude-sonnet-4"
+    }
 
     def __init__(
         self,
@@ -517,7 +547,7 @@ class AIOperations:
         Args:
             openrouter_key: OpenRouter API key (optional, will check env).
             replicate_key: Replicate API key (optional, will check env).
-            mode: Generation mode - "draft" for cheap/fast, "final" for best quality.
+            mode: Generation mode - "draft" for cheap/fast, "medium" for balanced, "final" for best quality.
         """
         self.openrouter = OpenRouterProvider(openrouter_key)
         self.replicate = ReplicateProvider(replicate_key)
@@ -564,10 +594,10 @@ class AIOperations:
         """Set the generation mode.
         
         Args:
-            mode: "draft" for cheap/fast models, "final" for best quality.
+            mode: "draft" for cheap/fast models, "medium" for balanced, "final" for best quality.
         """
-        if mode not in ("draft", "final"):
-            raise ValueError("Mode must be 'draft' or 'final'")
+        if mode not in ("draft", "medium", "final"):
+            raise ValueError("Mode must be 'draft', 'medium', or 'final'")
         self.mode = mode
     
     def get_available_llm_models(self) -> Dict[str, List[Dict[str, Any]]]:
@@ -596,16 +626,8 @@ class AIOperations:
     
     def _get_default_llm_model(self) -> str:
         """Get default LLM model based on mode."""
-        models = self.get_available_llm_models()
-        mode_models = models.get(self.mode, [])
-        
-        if mode_models:
-            return mode_models[0]["id"]
-        
-        # Fallback defaults
-        if self.mode == "draft":
-            return "meta-llama/llama-3.2-3b-instruct:free"
-        return "anthropic/claude-3.5-sonnet"
+        # Use predefined defaults for each tier
+        return self.DEFAULT_LLM_MODELS.get(self.mode, self.DEFAULT_LLM_MODELS["draft"])
     
     def llm_generate_sync(
         self,
