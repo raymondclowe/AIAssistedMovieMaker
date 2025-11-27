@@ -973,7 +973,7 @@ def main():
         st.session_state.db = db
         st.session_state.project_id = project_id
         st.session_state.project_root = project_root
-        st.session_state.asset_manager = AssetManager(project_root, db.conn)
+        st.session_state.asset_manager = AssetManager(project_root, db)
 
     render_sidebar()
 
