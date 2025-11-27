@@ -4,7 +4,7 @@ This document reviews the manual workflow demonstrated in `Example-manual-flow.m
 
 ## Executive Summary
 
-The manual workflow demonstrates a **clear, linear progression** that moves from concept to producible video content. The current app design (12 tabs) creates unnecessary complexity that doesn't align with how users naturally work. This document proposes a **simplified 5-phase workflow** that mirrors the successful manual process.
+The manual workflow demonstrates a **clear, linear progression** that moves from concept to producible video content. The current app design (12 tabs) creates unnecessary complexity that doesn't align with how users naturally work. This document proposes a **simplified 4-phase workflow** that mirrors the successful manual process.
 
 ---
 
@@ -33,9 +33,9 @@ From the manual workflow, we can identify 4 natural breakpoints where user input
 | Phase | Input | Output | User Action |
 |-------|-------|--------|-------------|
 | 1. **Story** | Initial idea | Complete screenplay | Review, iterate, approve |
-| 2. **Production Design** | Screenplay | Characters, Locations, Props defined | Create/upload reference images |
-| 3. **Shooting Script** | Screenplay + Design | Structured JSON shot list | Review technical details |
-| 4. **Generation** | Shots + References | Images/Videos | Review, regenerate, approve |
+| 2. **Design** | Screenplay | Characters, Locations, Props defined | Create/upload reference images |
+| 3. **Shooting** | Screenplay + Design | Structured JSON shot list | Review technical details |
+| 4. **Generate** | Shots + References | Images/Videos | Review, regenerate, approve |
 
 ---
 
@@ -129,18 +129,36 @@ Add a `workflow.py` module that manages project state:
 
 ```python
 class ProjectWorkflow:
-    """Manages project state and phase transitions."""
+    """Manages project state and phase transitions.
+    
+    Phases: "story" → "design" → "shooting" → "generation"
+    """
     
     PHASES = ["story", "design", "shooting", "generation"]
     
     def get_current_phase(self) -> str:
-        """Determine current phase based on project data."""
+        """Determine current phase based on project data.
+        
+        Returns:
+            str: Current phase name ("story", "design", "shooting", or "generation")
+        """
         
     def can_advance_to(self, phase: str) -> tuple[bool, str]:
-        """Check if project can advance to a phase."""
+        """Check if project can advance to a phase.
         
-    def get_phase_completeness(self) -> dict:
-        """Get completion percentage for each phase."""
+        Args:
+            phase: Target phase name
+            
+        Returns:
+            tuple: (can_advance: bool, reason: str)
+        """
+        
+    def get_phase_completeness(self) -> dict[str, float]:
+        """Get completion percentage for each phase.
+        
+        Returns:
+            dict: Mapping of phase name to completion percentage (0.0 to 1.0)
+        """
 ```
 
 ### 3. Reference Image Linking
@@ -164,16 +182,44 @@ CREATE TABLE reference_links (
 Add a utility to construct optimal prompts for video generation:
 
 ```python
+from typing import TypedDict
+
+class ShotData(TypedDict):
+    """Structured shot information from shooting script."""
+    shot_number: str
+    framing: str
+    subject: str
+    camera_movement: str
+    action: str
+    dialogue_snippet: str | None
+    characters: list[str]
+    location: str
+
+class ReferenceData(TypedDict):
+    """Reference images and context for shot generation."""
+    character_images: dict[str, str]  # character_name -> asset_path
+    location_images: list[str]
+    style_keywords: list[str]
+
 class ShotPromptBuilder:
-    """Builds optimized prompts for video generation."""
+    """Builds optimized prompts for video generation.
     
-    def build_prompt(self, shot: dict, references: dict) -> dict:
-        """
-        Build a prompt combining:
-        - Shot technical details (framing, camera)
-        - Character descriptions
-        - Location mood
-        - Art direction style
+    Combines structured shot data with visual references to create
+    prompts suitable for image/video generation APIs.
+    """
+    
+    def build_prompt(self, shot: ShotData, references: ReferenceData) -> dict:
+        """Build a prompt combining shot details and references.
+        
+        Args:
+            shot: Structured shot information (framing, camera, action, etc.)
+            references: Character/location images and style keywords
+        
+        Returns:
+            dict: Prompt suitable for video/image generation APIs with keys:
+                - "prompt": str - The text prompt
+                - "reference_images": list[str] - Paths to reference images
+                - "style": dict - Style/mood parameters
         """
 ```
 

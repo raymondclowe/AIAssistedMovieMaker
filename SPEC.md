@@ -358,7 +358,7 @@ After reviewing the manual workflow documented in `Example-manual-flow.md`, we i
 
 ### 12.1 The 4-Phase Workflow
 
-| Phase | What's Combined | User Goal |
+| Phase | Consolidates Tabs | User Goal |
 |-------|-----------------|-----------|
 | **📝 Story** | Ideation + Plot + Screenplay | Develop the narrative from concept to script |
 | **🎨 Design** | Cast + Locations + Props + Art Direction | Create visual references for all elements |
