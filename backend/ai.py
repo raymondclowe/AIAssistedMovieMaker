@@ -214,8 +214,13 @@ class ReplicateProvider:
         
         Args:
             api_key: Replicate API key.
+        
+        Raises:
+            ValueError: If api_key is empty or contains only whitespace.
         """
-        self.api_key = api_key
+        if not api_key or not api_key.strip():
+            raise ValueError("API key cannot be empty")
+        self.api_key = api_key.strip()
         # Clear cache when key changes
         self._models_cache = {}
         self._models_cache_time = {}
