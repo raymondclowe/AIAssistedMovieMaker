@@ -690,7 +690,7 @@ I... I think I need to check on something in the back.
 
 Jane watches as the Barista hurries away. She makes a note in her file.
 
-*Note: This is a placeholder scene. Connect your OpenAI API key for AI-generated content.*"""
+*Note: This is a placeholder scene. Connect your OpenRouter API key and Replicate API key for AI-generated content.*"""
 
         elif "character" in prompt_lower or "cast" in prompt_lower:
             return """# Character Profile
