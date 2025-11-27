@@ -233,9 +233,13 @@ class AssetManager:
         cursor = self.conn.cursor()
         cursor.execute(
             """SELECT * FROM assets
-               WHERE project_id = ? AND meta_json LIKE ?
+               WHERE project_id = ?
+                 AND EXISTS (
+                     SELECT 1 FROM json_each(assets.meta_json, '$.tags')
+                     WHERE value = ?
+                 )
                ORDER BY created_at DESC""",
-            (project_id, f"%{tag}%")
+            (project_id, tag)
         )
         assets = []
         for row in cursor.fetchall():
