@@ -655,7 +655,7 @@ class AIOperations:
 - Resolution of main conflict
 - New equilibrium established
 
-*Note: This is a placeholder outline. Connect your OpenAI API key for AI-generated content.*"""
+*Note: This is a placeholder outline. Connect your OpenRouter API key for AI-generated content.*"""
 
         elif "scene" in prompt_lower or "screenplay" in prompt_lower:
             return """INT. COFFEE SHOP - DAY
