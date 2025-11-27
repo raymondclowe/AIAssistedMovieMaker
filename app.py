@@ -101,7 +101,7 @@ def render_sidebar():
         st.markdown("---")
 
         # API Keys Section - for non-tech users
-        with st.expander("�� API Keys", expanded=not st.session_state.ai.is_configured()):
+        with st.expander("🔑 API Keys", expanded=not st.session_state.ai.is_configured()):
             st.markdown("Enter your API keys below, or set them as environment variables.")
             
             status = st.session_state.ai.get_status()
@@ -137,7 +137,7 @@ def render_sidebar():
                 st.rerun()
             
             st.markdown("---")
-            st.caption("�� Keys are stored in session only, not saved to disk.")
+            st.caption("💡 Keys are stored in session only, not saved to disk.")
 
         st.markdown("---")
 
