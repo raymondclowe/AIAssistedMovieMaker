@@ -95,7 +95,13 @@ class AssetManager:
 
         Returns:
             Asset ID.
+        
+        Raises:
+            IOError: If file operations fail.
+            sqlite3.Error: If database operations fail.
         """
+        import sqlite3
+
         # Hash the data
         file_hash = hashlib.sha256(data).hexdigest()
 
@@ -109,29 +115,41 @@ class AssetManager:
         # Get file extension
         suffix = Path(filename).suffix or ".bin"
 
-        # Copy file to assets directory
+        # Write file to assets directory
         dest = self.assets_dir / f"{file_hash}{suffix}"
-        if not dest.exists():
-            dest.write_bytes(data)
+        try:
+            if not dest.exists():
+                dest.write_bytes(data)
+        except OSError as e:
+            raise IOError(f"Failed to write asset file: {e}")
 
         # Determine MIME type
         mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
-        # Insert metadata row
-        cursor.execute(
-            """INSERT INTO assets (project_id, hash, path, mime_type, size_bytes, meta_json)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (
-                project_id,
-                file_hash,
-                str(dest.relative_to(self.project_root)),
-                mime_type,
-                len(data),
-                json.dumps(meta) if meta else None
+        # Insert metadata row with conflict handling for race conditions
+        try:
+            cursor.execute(
+                """INSERT INTO assets (project_id, hash, path, mime_type, size_bytes, meta_json)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    project_id,
+                    file_hash,
+                    str(dest.relative_to(self.project_root)),
+                    mime_type,
+                    len(data),
+                    json.dumps(meta) if meta else None
+                )
             )
-        )
-        self.conn.commit()
-        return cursor.lastrowid
+            self.conn.commit()
+            return cursor.lastrowid
+        except sqlite3.IntegrityError:
+            # Race condition: another process inserted the same hash
+            # Return the existing asset ID
+            cursor.execute("SELECT id FROM assets WHERE hash = ?", (file_hash,))
+            existing = cursor.fetchone()
+            if existing:
+                return existing[0]
+            raise  # Re-raise if we still can't find it
 
     def store_asset_from_file(
         self,
@@ -154,64 +172,96 @@ class AssetManager:
 
         Returns:
             Asset ID.
+        
+        Raises:
+            IOError: If file operations fail.
+            sqlite3.Error: If database operations fail.
         """
+        import tempfile
+        import shutil
+        import sqlite3
+
         # Get file extension
         suffix = Path(filename).suffix or ".bin"
 
-        # Create a temp file to stream into while computing hash
-        import tempfile
-        import shutil
-
         hasher = hashlib.sha256()
         total_size = 0
+        tmp_path = None
 
-        # Stream the file to a temporary location while computing hash
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
-            tmp_path = Path(tmp_file.name)
-            while True:
-                chunk = file_obj.read(chunk_size)
-                if not chunk:
-                    break
-                hasher.update(chunk)
-                tmp_file.write(chunk)
-                total_size += len(chunk)
+        try:
+            # Stream the file to a temporary location while computing hash
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+                tmp_path = Path(tmp_file.name)
+                while True:
+                    chunk = file_obj.read(chunk_size)
+                    if not chunk:
+                        break
+                    hasher.update(chunk)
+                    tmp_file.write(chunk)
+                    total_size += len(chunk)
 
-        file_hash = hasher.hexdigest()
+            file_hash = hasher.hexdigest()
 
-        # Check if asset already exists
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT id FROM assets WHERE hash = ?", (file_hash,))
-        existing = cursor.fetchone()
-        if existing:
-            # Clean up temp file and return existing asset
-            tmp_path.unlink()
-            return existing[0]
+            # Check if asset already exists
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT id FROM assets WHERE hash = ?", (file_hash,))
+            existing = cursor.fetchone()
+            if existing:
+                # Clean up temp file and return existing asset
+                if tmp_path and tmp_path.exists():
+                    tmp_path.unlink()
+                return existing[0]
 
-        # Move temp file to assets directory
-        dest = self.assets_dir / f"{file_hash}{suffix}"
-        if not dest.exists():
-            shutil.move(str(tmp_path), str(dest))
-        else:
-            tmp_path.unlink()
+            # Move temp file to assets directory
+            dest = self.assets_dir / f"{file_hash}{suffix}"
+            try:
+                if not dest.exists():
+                    shutil.move(str(tmp_path), str(dest))
+                    tmp_path = None  # Mark as moved
+                else:
+                    # File already exists (race condition), just use existing
+                    if tmp_path and tmp_path.exists():
+                        tmp_path.unlink()
+                    tmp_path = None
+            except (OSError, shutil.Error) as e:
+                raise IOError(f"Failed to move asset file: {e}")
 
-        # Determine MIME type
-        mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+            # Determine MIME type
+            mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
-        # Insert metadata row
-        cursor.execute(
-            """INSERT INTO assets (project_id, hash, path, mime_type, size_bytes, meta_json)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (
-                project_id,
-                file_hash,
-                str(dest.relative_to(self.project_root)),
-                mime_type,
-                total_size,
-                json.dumps(meta) if meta else None
-            )
-        )
-        self.conn.commit()
-        return cursor.lastrowid
+            # Insert metadata row with conflict handling for race conditions
+            try:
+                cursor.execute(
+                    """INSERT INTO assets (project_id, hash, path, mime_type, size_bytes, meta_json)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        project_id,
+                        file_hash,
+                        str(dest.relative_to(self.project_root)),
+                        mime_type,
+                        total_size,
+                        json.dumps(meta) if meta else None
+                    )
+                )
+                self.conn.commit()
+                return cursor.lastrowid
+            except sqlite3.IntegrityError:
+                # Race condition: another process inserted the same hash
+                # Return the existing asset ID
+                cursor.execute("SELECT id FROM assets WHERE hash = ?", (file_hash,))
+                existing = cursor.fetchone()
+                if existing:
+                    return existing[0]
+                raise  # Re-raise if we still can't find it
+
+        except Exception:
+            # Clean up temp file on any error
+            if tmp_path and tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass  # Best effort cleanup
+            raise
 
     def get_asset(self, asset_id: int) -> Optional[dict]:
         """Get asset metadata by ID.

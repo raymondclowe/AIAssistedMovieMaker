@@ -8,6 +8,7 @@ Supports:
 - Replicate.com for video and image generation
 """
 
+import asyncio
 import os
 import time
 from typing import Optional, List, Dict, Any
@@ -595,7 +596,7 @@ class AIOperations:
         max_tokens: int = 4096,
         temperature: float = 0.7
     ) -> str:
-        """Async text generation (currently wraps sync version).
+        """Async text generation using asyncio.to_thread for non-blocking execution.
 
         Args:
             prompt: User prompt.
@@ -607,12 +608,13 @@ class AIOperations:
         Returns:
             Generated text.
         """
-        return self.llm_generate_sync(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            model=model,
-            max_tokens=max_tokens,
-            temperature=temperature
+        return await asyncio.to_thread(
+            self.llm_generate_sync,
+            prompt,
+            system_prompt,
+            model,
+            max_tokens,
+            temperature
         )
 
     def _mock_llm_response(self, prompt: str) -> str:
@@ -654,7 +656,7 @@ class AIOperations:
 - Resolution of main conflict
 - New equilibrium established
 
-*Note: This is a placeholder outline. Connect your OpenRouter API key for AI-generated content.*"""
+*Note: This is a placeholder outline. Set OPENROUTER_API_KEY for AI-generated content.*"""
 
         elif "scene" in prompt_lower or "screenplay" in prompt_lower:
             return """INT. COFFEE SHOP - DAY
@@ -690,7 +692,7 @@ I... I think I need to check on something in the back.
 
 Jane watches as the Barista hurries away. She makes a note in her file.
 
-*Note: This is a placeholder scene. Connect your OpenRouter API key and Replicate API key for AI-generated content.*"""
+*Note: This is a placeholder scene. Set OPENROUTER_API_KEY for AI-generated content.*"""
 
         elif "character" in prompt_lower or "cast" in prompt_lower:
             return """# Character Profile
@@ -714,7 +716,7 @@ Jane watches as the Barista hurries away. She makes a note in her file.
 ## Motivation
 Finding the truth, no matter where it leads
 
-*Note: This is a placeholder character. Connect your OpenRouter API key for AI-generated content.*"""
+*Note: This is a placeholder character. Set OPENROUTER_API_KEY for AI-generated content.*"""
 
         elif "location" in prompt_lower:
             return """# Location Description
@@ -741,7 +743,7 @@ Finding the truth, no matter where it leads
 3. Sleeper compartments - private spaces
 4. Service areas - staff only
 
-*Note: This is a placeholder location. Connect your OpenRouter API key and Replicate API key for AI-generated content.*"""
+*Note: This is a placeholder location. Set OPENROUTER_API_KEY for AI-generated content.*"""
 
         elif "shot" in prompt_lower or "cinematography" in prompt_lower:
             return """# Shot Description
@@ -768,7 +770,7 @@ Finding the truth, no matter where it leads
 ## Notes
 This shot sets the mood and establishes the setting before we cut to our protagonist.
 
-*Note: This is a placeholder shot description. Connect your API keys for AI-generated content.*"""
+*Note: This is a placeholder shot. Set OPENROUTER_API_KEY for AI-generated content.*"""
 
         else:
             return f"""# AI Response
@@ -782,7 +784,7 @@ This is a placeholder response. To get actual AI-generated content, please:
 
 Once configured, the app will use live AI models for content generation.
 
-*Note: The AI features of this app require valid API keys.*"""
+*Note: This is a placeholder. Set API keys for AI-generated content.*"""
 
     def generate_image_sync(
         self,
@@ -815,7 +817,7 @@ Once configured, the app will use live AI models for content generation.
         model: Optional[str] = None,
         **kwargs
     ) -> str:
-        """Generate an image (async wrapper for sync version).
+        """Generate an image using asyncio.to_thread for non-blocking execution.
 
         Args:
             prompt: Image prompt.
@@ -825,7 +827,12 @@ Once configured, the app will use live AI models for content generation.
         Returns:
             URL of the generated image.
         """
-        return self.generate_image_sync(prompt=prompt, model=model, **kwargs)
+        return await asyncio.to_thread(
+            self.generate_image_sync,
+            prompt,
+            model,
+            **kwargs
+        )
     
     def generate_video_sync(
         self,
@@ -858,7 +865,7 @@ Once configured, the app will use live AI models for content generation.
         model: Optional[str] = None,
         **kwargs
     ) -> str:
-        """Generate a video (async wrapper for sync version).
+        """Generate a video using asyncio.to_thread for non-blocking execution.
 
         Args:
             prompt: Video prompt.
@@ -868,7 +875,12 @@ Once configured, the app will use live AI models for content generation.
         Returns:
             URL of the generated video.
         """
-        return self.generate_video_sync(prompt=prompt, model=model, **kwargs)
+        return await asyncio.to_thread(
+            self.generate_video_sync,
+            prompt,
+            model,
+            **kwargs
+        )
     
     def download_asset(self, url: str) -> bytes:
         """Download an asset from a URL.
