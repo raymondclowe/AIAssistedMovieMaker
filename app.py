@@ -297,7 +297,14 @@ def get_creative_notes_for_category(category: str) -> list:
     if not notes_tab:
         return []
     blocks = st.session_state.db.get_blocks_by_tab(notes_tab["id"])
-    return [b for b in blocks if b["type"] == f"note_{category}" and "used" not in (b.get("tags") or [])]
+    return [b for b in blocks if b["type"] == f"note_{category}" and "used" not in b.get("tags", [])]
+
+
+def truncate_content(content: str, max_length: int = 60) -> str:
+    """Truncate content and add ellipsis if needed."""
+    if len(content) > max_length:
+        return content[:max_length] + "..."
+    return content
 
 
 def render_creative_notes_selector(category: str, form_key: str) -> Optional[str]:
@@ -314,7 +321,7 @@ def render_creative_notes_selector(category: str, form_key: str) -> Optional[str
     selected = st.selectbox(
         "Select a saved idea to include",
         options=options,
-        format_func=lambda x: x["content"][:60] + "..." if x["id"] else "-- No note --",
+        format_func=lambda x: truncate_content(x["content"]) if x["id"] else "-- No note --",
         key=f"note_select_{form_key}"
     )
     if selected and selected.get("id"):
@@ -343,18 +350,24 @@ def render_block_with_feedback(block: dict, block_type_name: str, revision_promp
     ]
     total_versions = len(content_history) if content_history else 1
     
-    # Get current version index
+    # Get current version index (0 = latest/current, higher = older versions)
     version_key = f"version_{block_id}"
     if version_key not in st.session_state.block_version_index:
         st.session_state.block_version_index[version_key] = 0
     current_version_idx = st.session_state.block_version_index[version_key]
     
     # Determine which content to show
+    # Index 0 means show current/latest content from block
+    # Index > 0 means show historical version from content_history
     if current_version_idx == 0:
         display_content = block["content"]
     else:
-        if current_version_idx > 0 and current_version_idx <= len(content_history):
-            payload = content_history[current_version_idx - 1].get("payload", {})
+        # Show historical version - ensure index is within bounds
+        history_idx = current_version_idx - 1
+        if history_idx >= 0 and history_idx < len(content_history):
+            payload = content_history[history_idx].get("payload", {})
+            # For edit actions, old_content contains the previous version
+            # For create actions, content contains the initial version
             display_content = payload.get("old_content") or payload.get("content") or block["content"]
         else:
             display_content = block["content"]
@@ -363,12 +376,14 @@ def render_block_with_feedback(block: dict, block_type_name: str, revision_promp
     if total_versions > 1:
         col1, col2, col3 = st.columns([1, 2, 1])
         with col1:
+            # Disable "Older" when at the oldest version
             if st.button("⬅️ Older", key=f"older_{block_id}", disabled=current_version_idx >= total_versions - 1):
                 st.session_state.block_version_index[version_key] = current_version_idx + 1
                 st.rerun()
         with col2:
             st.caption(f"Version {total_versions - current_version_idx} of {total_versions}")
         with col3:
+            # Disable "Newer" when at the latest version (index 0)
             if st.button("Newer ➡️", key=f"newer_{block_id}", disabled=current_version_idx <= 0):
                 st.session_state.block_version_index[version_key] = current_version_idx - 1
                 st.rerun()
@@ -482,11 +497,11 @@ def render_creative_notes_section():
             st.caption("**Saved Ideas:**")
             for block in blocks:
                 category = block["type"].replace("note_", "")
-                tags = block.get("tags") or []
+                tags = block.get("tags", [])
                 used_marker = " ✅" if "used" in tags else ""
                 with st.container(border=True):
                     st.caption(f"📌 {category.title()}{used_marker}")
-                    st.markdown(block["content"][:100] + ("..." if len(block["content"]) > 100 else ""))
+                    st.markdown(truncate_content(block["content"], 100))
                     col1, col2 = st.columns(2)
                     with col1:
                         if st.button("🗑️", key=f"del_note_{block['id']}"):
@@ -1008,7 +1023,9 @@ CREATOR'S NOTES/FEEDBACK:
 Please revise the character to incorporate the feedback while maintaining consistency. Output only the revised character profile."""
         
         for block in characters:
-            with st.expander(f"👤 {block['content'].split(chr(10))[0]}", expanded=False):
+            # Get first line of content as title
+            first_line = block['content'].split('\n')[0]
+            with st.expander(f"👤 {truncate_content(first_line)}", expanded=False):
                 render_block_with_feedback(
                     block=block,
                     block_type_name="Character",
