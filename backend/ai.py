@@ -742,7 +742,7 @@ Finding the truth, no matter where it leads
 3. Sleeper compartments - private spaces
 4. Service areas - staff only
 
-*Note: This is a placeholder location. Connect your OpenAI API key for AI-generated content.*"""
+*Note: This is a placeholder location. Connect your OpenRouter API key and Replicate API key for AI-generated content.*"""
 
         elif "shot" in prompt_lower or "cinematography" in prompt_lower:
             return """# Shot Description
