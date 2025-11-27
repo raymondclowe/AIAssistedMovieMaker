@@ -352,7 +352,96 @@ A single click on the badge runs the appropriate AI generation with **both the o
 
 ---
 
-## 12. Final Thoughts
+## 12. Revised Workflow Design (Based on Manual Workflow Analysis)
+
+After reviewing the manual workflow documented in `Example-manual-flow.md`, we identified that the 12-tab structure creates unnecessary complexity. A simplified 4-phase approach better aligns with natural user workflows.
+
+### 12.1 The 4-Phase Workflow
+
+| Phase | What's Combined | User Goal |
+|-------|-----------------|-----------|
+| **📝 Story** | Ideation + Plot + Screenplay | Develop the narrative from concept to script |
+| **🎨 Design** | Cast + Locations + Props + Art Direction | Create visual references for all elements |
+| **🎬 Shooting** | Shooting Script + Cinematography + Shots | Break screenplay into production-ready shots |
+| **⚡ Generate** | Shot Generation + Asset Library + Review | Produce and assemble final content |
+
+### 12.2 Key Architectural Changes
+
+**API Layer for Frontend Flexibility**
+
+To support swapping Streamlit for a more attractive frontend later:
+
+```
+┌─────────────────────────────────────────────┐
+│              Frontend Layer                  │
+│  (Streamlit now → React/Vue/Svelte later)   │
+├─────────────────────────────────────────────┤
+│           REST API Layer (NEW)               │
+│              FastAPI Router                  │
+├─────────────────────────────────────────────┤
+│            Backend Services                  │
+│   db.py │ assets.py │ ai.py │ workflow.py   │
+└─────────────────────────────────────────────┘
+```
+
+**Workflow State Tracking**
+
+Add phase tracking to projects:
+
+```sql
+ALTER TABLE projects ADD COLUMN current_phase TEXT DEFAULT 'story';
+ALTER TABLE projects ADD COLUMN phase_data TEXT;  -- JSON for phase state
+```
+
+**Reference Image Linking**
+
+Enhanced asset-entity relationships:
+
+```sql
+CREATE TABLE reference_links (
+    id INTEGER PRIMARY KEY,
+    asset_id INTEGER REFERENCES assets(id),
+    entity_type TEXT NOT NULL,  -- 'character', 'location', 'prop'
+    entity_id INTEGER NOT NULL,
+    usage TEXT,                 -- 'primary', 'expression', 'costume'
+    UNIQUE(asset_id, entity_type, entity_id)
+);
+```
+
+### 12.3 Testing Strategy (Cost-Efficient)
+
+As noted in the issue requirements:
+
+1. **Draft Mode Default**: Use cheap/free LLM models during development
+2. **Stills Before Video**: Generate still images first, only upgrade to video when approved
+3. **Mock Mode**: Built-in mock responses for UI testing without API calls (already implemented in `ai.py`)
+4. **Hash-Based Deduplication**: Prevents regenerating identical content (already implemented in `assets.py`)
+
+### 12.4 Prompt Building from Structured Data
+
+The manual workflow shows that JSON-structured shooting scripts work well as prompts. A `ShotPromptBuilder` utility can automate this:
+
+```python
+class ShotPromptBuilder:
+    """Builds optimized prompts from structured shot data."""
+    
+    def build_prompt(self, shot: dict, context: dict) -> dict:
+        """
+        Combine:
+        - Shot technical details (from shooting script)
+        - Character references (from design phase)
+        - Location mood (from design phase)
+        - Art direction style guide
+        
+        Returns prompt suitable for video/image generation.
+        """
+```
+
+See `WORKFLOW_REVIEW.md` for complete analysis and recommendations.
+
+---
+
+## 13. Final Thoughts
 
 * The system you described is essentially a **directed‑acyclic graph of content objects** with versioned text nodes and binary leaves.  
 * By **centralising everything in SQLite** and using **hash‑addressed files**, you keep the project portable and easy to back up.  
