@@ -933,22 +933,39 @@ def render_generation_section():
                             # Extract description from shot content
                             prompt = f"Cinematic film still: {selected_shot['content']}"
                             image_url = st.session_state.ai.generate_image_sync(prompt)
-                            st.image(image_url, caption="Generated Image")
+                            # Store in session state for display and saving
+                            st.session_state.generated_image_url = image_url
+                            st.session_state.generated_image_prompt = prompt
+                            st.session_state.generated_image_shot_id = selected_shot["id"]
                             st.success("Image generated!")
-                            
-                            # Offer to save
-                            if st.button("💾 Save to Asset Library"):
-                                # Download and save
-                                image_bytes = st.session_state.ai.download_asset(image_url)
-                                asset_id = st.session_state.asset_manager.store_asset_from_bytes(
-                                    image_bytes,
-                                    "generated.png",
-                                    st.session_state.project_id,
-                                    {"source": "generated", "shot_id": selected_shot["id"], "prompt": prompt}
-                                )
-                                st.success(f"Saved as asset #{asset_id}")
+                            st.rerun()
                         except Exception as e:
                             st.error(f"Generation failed: {e}")
+
+            # After generation, show image and save button if available
+            if (
+                "generated_image_url" in st.session_state
+                and st.session_state.generated_image_url
+                and "generated_image_shot_id" in st.session_state
+                and st.session_state.generated_image_shot_id == selected_shot["id"]
+            ):
+                st.image(st.session_state.generated_image_url, caption="Generated Image")
+                if st.button("💾 Save to Asset Library"):
+                    try:
+                        image_bytes = st.session_state.ai.download_asset(st.session_state.generated_image_url)
+                        asset_id = st.session_state.asset_manager.store_asset_from_bytes(
+                            image_bytes,
+                            "generated.png",
+                            st.session_state.project_id,
+                            {
+                                "source": "generated",
+                                "shot_id": st.session_state.generated_image_shot_id,
+                                "prompt": st.session_state.generated_image_prompt,
+                            }
+                        )
+                        st.success(f"Saved as asset #{asset_id}")
+                    except Exception as e:
+                        st.error(f"Failed to save asset: {e}")
         else:
             if st.button("✨ Generate Video", type="primary", use_container_width=True):
                 if not st.session_state.ai.replicate.is_configured():
