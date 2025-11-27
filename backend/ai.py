@@ -53,6 +53,22 @@ class OpenRouterProvider:
         self._models_cache_time = 0
         self._cache_ttl = 300  # 5 minutes cache
     
+    def set_api_key(self, api_key: str):
+        """Set the API key at runtime.
+        
+        Args:
+            api_key: OpenRouter API key.
+        
+        Raises:
+            ValueError: If api_key is empty or contains only whitespace.
+        """
+        if not api_key or not api_key.strip():
+            raise ValueError("API key cannot be empty")
+        self.api_key = api_key.strip()
+        # Clear cache when key changes
+        self._models_cache = None
+        self._models_cache_time = 0
+    
     def is_configured(self) -> bool:
         """Check if the provider is properly configured."""
         return self.api_key is not None
@@ -197,6 +213,22 @@ class ReplicateProvider:
         self._models_cache = {}
         self._models_cache_time = {}
         self._cache_ttl = 300  # 5 minutes cache
+    
+    def set_api_key(self, api_key: str):
+        """Set the API key at runtime.
+        
+        Args:
+            api_key: Replicate API key.
+        
+        Raises:
+            ValueError: If api_key is empty or contains only whitespace.
+        """
+        if not api_key or not api_key.strip():
+            raise ValueError("API key cannot be empty")
+        self.api_key = api_key.strip()
+        # Clear cache when key changes
+        self._models_cache = {}
+        self._models_cache_time = {}
     
     def is_configured(self) -> bool:
         """Check if the provider is properly configured."""
@@ -506,6 +538,27 @@ class AIOperations:
             "openrouter": self.openrouter.is_configured(),
             "replicate": self.replicate.is_configured()
         }
+    
+    def set_openrouter_key(self, api_key: str):
+        """Set the OpenRouter API key at runtime.
+        
+        Args:
+            api_key: OpenRouter API key.
+        """
+        self.openrouter.set_api_key(api_key)
+        # Reset model selection
+        self._selected_llm_model = None
+    
+    def set_replicate_key(self, api_key: str):
+        """Set the Replicate API key at runtime.
+        
+        Args:
+            api_key: Replicate API key.
+        """
+        self.replicate.set_api_key(api_key)
+        # Reset model selections
+        self._selected_image_model = None
+        self._selected_video_model = None
     
     def set_mode(self, mode: str):
         """Set the generation mode.

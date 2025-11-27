@@ -1,85 +1,82 @@
 # AI-Assisted Movie Maker 🎬
 
-An AI-powered application to help you create movies from concept to final cut. This tool guides you through the entire filmmaking pipeline with AI assistance at every step.
+An AI-powered application to help you create movies from concept to final cut. This tool guides you through a streamlined 4-phase filmmaking workflow with AI assistance at every step.
 
-## Features
+## Quick Start
 
-- **Complete Workflow**: 12 tabs covering the full movie-making pipeline
-  - Ideation → Plot → Screenplay → Shooting Script → Cast → Locations → Props → Art Direction → Cinematography → Shots → Asset Library → Review
-
-- **AI-Powered Generation**: Generate content at each stage using multiple AI providers
-  - **OpenRouter.ai** - Text generation (plot outlines, scenes, characters, etc.)
-  - **Replicate.com** - Image and video generation
-  
-- **Draft vs Final Mode**: Choose between fast/cheap models for iteration or best-quality models for production
-
-- **Asset Management**: Hash-based deduplication for images, videos, and audio
-
-- **Version History**: Track all changes with full history
-
-- **Dependency Tracking**: Link related content across tabs
-
-## Installation
-
-1. Clone the repository:
-```bash
-git clone https://github.com/raymondclowe/AIAssistedMovieMaker.git
-cd AIAssistedMovieMaker
-```
-
-2. Install dependencies:
+1. **Install dependencies:**
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Set your API keys for AI features:
-```bash
-# OpenRouter for text generation
-export OPENROUTER_API_KEY=your_openrouter_key
-
-# Replicate for image/video generation
-export REPLICATE_API_KEY=your_replicate_key
-```
-
-## Usage
-
-Run the Streamlit application:
+2. **Run the app:**
 ```bash
 streamlit run app.py
 ```
 
-The app will open in your browser at `http://localhost:8501`.
+3. **Add your API keys** in the sidebar (or set as environment variables)
 
-### Workflow
+That's it! Start creating your movie.
 
-1. **Ideation**: Start with your movie concept or logline
-2. **Plot**: Generate or write a plot outline
-3. **Screenplay**: Create scenes with dialogue and action
-4. **Shooting Script**: Add technical details to scenes
-5. **Cast**: Define your characters
-6. **Locations**: Describe your settings
-7. **Props**: Track physical items
-8. **Art Direction**: Define visual style
-9. **Cinematography**: Plan camera work
-10. **Shots**: Create individual shot cards
-11. **Asset Library**: Manage media files
-12. **Review**: Review and export your project
+## Workflow
 
-### AI Features
+The app uses a simplified **4-phase workflow** that mirrors how professionals develop film projects:
 
-- Click "✨ Generate" buttons to create AI content
-- Works without API keys (shows placeholder content)
-- **Draft Mode**: Uses fast, cheap models for rapid iteration
-- **Final Mode**: Uses best-quality models for production content
+### 📝 Phase 1: Story
+Develop your narrative from initial concept to complete screenplay.
+- **Concept** - Write your logline or movie idea
+- **Plot** - Generate or write a structured plot outline
+- **Screenplay** - Create scenes with dialogue and action
 
-### Supported API Keys
+### 🎨 Phase 2: Design
+Define the visual elements of your movie.
+- **Characters** - Create detailed character profiles
+- **Locations** - Describe your settings and environments
+- **Props** - Track important items and costumes
+- **Style** - Define your visual art direction
 
-The app looks for these environment variables (checks both primary and COPILOT_ prefixed versions):
+### 🎬 Phase 3: Shooting
+Plan your production with detailed shot breakdowns.
+- **Shot List** - Break scenes into individual shots
+- **Cinematography** - Define camera work and lighting
+- **Shot Cards** - Create detailed descriptions for each shot
 
-| Provider | Primary Key | Fallback Key |
-|----------|-------------|--------------|
-| OpenRouter | `OPENROUTER_API_KEY` | `COPILOT_OPENROUTER_API_KEY` |
-| Replicate | `REPLICATE_API_KEY` | `COPILOT_REPLICATE_API_KEY` |
+### ⚡ Phase 4: Generate
+Create your visual assets and review your project.
+- **Generate** - Create still images or videos from shot descriptions
+- **Assets** - Manage all your project media files
+- **Review** - See project summary and export data
+
+## AI Providers
+
+The app uses two AI services:
+
+| Provider | Purpose | Get API Key |
+|----------|---------|-------------|
+| **OpenRouter** | Text generation (plot, scenes, characters) | [openrouter.ai/keys](https://openrouter.ai/keys) |
+| **Replicate** | Image and video generation | [replicate.com/account](https://replicate.com/account/api-tokens) |
+
+### Setting Up API Keys
+
+**Option 1: Via the App (Recommended for most users)**
+- Click the "🔑 API Keys" section in the sidebar
+- Paste your keys into the input fields
+- Keys are stored in session only (not saved to disk)
+
+**Option 2: Environment Variables (For developers)**
+```bash
+export OPENROUTER_API_KEY=sk-or-...
+export REPLICATE_API_KEY=r8_...
+```
+
+The app also checks for `COPILOT_` prefixed versions of these keys.
+
+## Generation Modes
+
+- **Draft Mode** (default) - Uses fast, inexpensive models for rapid iteration
+- **Final Mode** - Uses best-quality models for production content
+
+💡 **Tip:** Use Draft mode while developing your story, then switch to Final mode for your best shots.
 
 ## Project Structure
 
@@ -92,16 +89,31 @@ AIAssistedMovieMaker/
 │   ├── assets.py          # Asset management
 │   └── ai.py              # AI operations (OpenRouter, Replicate)
 ├── requirements.txt       # Python dependencies
-├── SPEC.md               # Detailed specification
 └── README.md             # This file
 ```
 
 ## Data Storage
 
-Projects are stored in a `movie_project/` directory:
-- `project.db` - SQLite database
-- `assets/` - Media files (hash-named)
-- `exports/` - Exported files
+Projects are stored locally in a `movie_project/` directory:
+- `project.db` - SQLite database with all your content
+- `assets/` - Media files (hash-named for deduplication)
+
+## Cost-Efficient Development
+
+The app is designed for iterative development without breaking the bank:
+
+1. **Draft Mode** - Uses free or cheap models by default
+2. **Stills First** - Generate still images before committing to video
+3. **Smart Caching** - Hash-based deduplication prevents regenerating identical content
+4. **Mock Mode** - Works without API keys (shows placeholder content)
+
+## Requirements
+
+- Python 3.9+
+- Dependencies in `requirements.txt`:
+  - streamlit
+  - httpx
+  - sqlalchemy
 
 ## License
 
@@ -109,4 +121,8 @@ MIT License
 
 ## Contributing
 
-Contributions welcome! Please read SPEC.md for the full specification.
+Contributions welcome! The app is designed with a clean separation between:
+- **Frontend** (app.py - Streamlit, easily swappable)
+- **Backend** (backend/ - reusable services)
+
+This makes it easy to replace Streamlit with a different frontend framework in the future.
