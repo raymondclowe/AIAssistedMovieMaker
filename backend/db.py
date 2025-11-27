@@ -1,115 +1,156 @@
 """Database module for AI-Assisted Movie Maker.
 
 This module provides the Database class for managing projects, tabs, blocks,
-assets, history, and dependencies using SQLite.
+assets, history, and dependencies using SQLAlchemy for thread safety.
 """
 
-import sqlite3
 import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from contextlib import contextmanager
+
+from sqlalchemy import create_engine, text, event
+from sqlalchemy.orm import sessionmaker, scoped_session
+from sqlalchemy.pool import QueuePool
 
 
 class Database:
-    """SQLite database manager for movie projects."""
+    """SQLAlchemy-based database manager for movie projects.
+    
+    Uses scoped_session for thread-safe database access.
+    """
 
     def __init__(self, db_path: Path):
-        """Initialize database connection.
+        """Initialize database connection with SQLAlchemy.
 
         Args:
             db_path: Path to the SQLite database file.
         """
         self.db_path = db_path
-        self.conn = sqlite3.connect(str(self.db_path))
-        self.conn.row_factory = sqlite3.Row
+        # Create engine with QueuePool for connection pooling
+        # Each thread will get its own connection from the pool
+        self.engine = create_engine(
+            f"sqlite:///{db_path}",
+            poolclass=QueuePool,
+            pool_size=5,
+            max_overflow=10,
+            pool_pre_ping=True,
+            echo=False
+        )
+        
+        # Enable WAL mode and foreign keys for better concurrent access
+        @event.listens_for(self.engine, "connect")
+        def set_sqlite_pragma(dbapi_connection, connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+        
+        # Create a scoped session factory for thread-safe sessions
+        session_factory = sessionmaker(bind=self.engine)
+        self.Session = scoped_session(session_factory)
         self._init_schema()
+    
+    @contextmanager
+    def get_session(self):
+        """Get a thread-safe database session.
+        
+        Yields:
+            A SQLAlchemy session that will be automatically committed or rolled back.
+        """
+        session = self.Session()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            self.Session.remove()
 
     def _init_schema(self):
         """Initialize database schema."""
-        cursor = self.conn.cursor()
-
-        # Projects table
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS projects (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            root_path TEXT NOT NULL
-        )
-        """)
-
-        # Tabs table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS tabs (
+        with self.get_session() as session:
+            # Projects table
+            session.execute(text("""
+            CREATE TABLE IF NOT EXISTS projects (
                 id INTEGER PRIMARY KEY,
-                project_id INTEGER REFERENCES projects(id),
                 name TEXT NOT NULL,
-                position INTEGER NOT NULL
-            )
-        """)
-
-        # Blocks table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS blocks (
-                id INTEGER PRIMARY KEY,
-                tab_id INTEGER REFERENCES tabs(id),
-                parent_id INTEGER REFERENCES blocks(id),
-                type TEXT NOT NULL,
-                content TEXT,
-                tags TEXT,
-                version INTEGER NOT NULL DEFAULT 1,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                root_path TEXT NOT NULL
             )
-        """)
+            """))
 
-        # Assets table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS assets (
-                id INTEGER PRIMARY KEY,
-                project_id INTEGER REFERENCES projects(id),
-                hash TEXT NOT NULL UNIQUE,
-                path TEXT NOT NULL,
-                mime_type TEXT NOT NULL,
-                size_bytes INTEGER,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                meta_json TEXT
-            )
-        """)
+            # Tabs table
+            session.execute(text("""
+                CREATE TABLE IF NOT EXISTS tabs (
+                    id INTEGER PRIMARY KEY,
+                    project_id INTEGER REFERENCES projects(id),
+                    name TEXT NOT NULL,
+                    position INTEGER NOT NULL
+                )
+            """))
 
-        # Block-Asset linking table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS block_assets (
-                block_id INTEGER REFERENCES blocks(id),
-                asset_id INTEGER REFERENCES assets(id),
-                role TEXT,
-                PRIMARY KEY (block_id, asset_id)
-            )
-        """)
+            # Blocks table
+            session.execute(text("""
+                CREATE TABLE IF NOT EXISTS blocks (
+                    id INTEGER PRIMARY KEY,
+                    tab_id INTEGER REFERENCES tabs(id),
+                    parent_id INTEGER REFERENCES blocks(id),
+                    type TEXT NOT NULL,
+                    content TEXT,
+                    tags TEXT,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
 
-        # History table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS history (
-                id INTEGER PRIMARY KEY,
-                block_id INTEGER REFERENCES blocks(id),
-                action TEXT NOT NULL,
-                payload TEXT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+            # Assets table
+            session.execute(text("""
+                CREATE TABLE IF NOT EXISTS assets (
+                    id INTEGER PRIMARY KEY,
+                    project_id INTEGER REFERENCES projects(id),
+                    hash TEXT NOT NULL UNIQUE,
+                    path TEXT NOT NULL,
+                    mime_type TEXT NOT NULL,
+                    size_bytes INTEGER,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    meta_json TEXT
+                )
+            """))
 
-        # Dependencies table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS dependencies (
-                src_block_id INTEGER REFERENCES blocks(id),
-                dst_block_id INTEGER REFERENCES blocks(id),
-                type TEXT,
-                PRIMARY KEY (src_block_id, dst_block_id)
-            )
-        """)
+            # Block-Asset linking table
+            session.execute(text("""
+                CREATE TABLE IF NOT EXISTS block_assets (
+                    block_id INTEGER REFERENCES blocks(id),
+                    asset_id INTEGER REFERENCES assets(id),
+                    role TEXT,
+                    PRIMARY KEY (block_id, asset_id)
+                )
+            """))
 
-        self.conn.commit()
+            # History table
+            session.execute(text("""
+                CREATE TABLE IF NOT EXISTS history (
+                    id INTEGER PRIMARY KEY,
+                    block_id INTEGER REFERENCES blocks(id),
+                    action TEXT NOT NULL,
+                    payload TEXT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+
+            # Dependencies table
+            session.execute(text("""
+                CREATE TABLE IF NOT EXISTS dependencies (
+                    src_block_id INTEGER REFERENCES blocks(id),
+                    dst_block_id INTEGER REFERENCES blocks(id),
+                    type TEXT,
+                    PRIMARY KEY (src_block_id, dst_block_id)
+                )
+            """))
 
     def create_project(self, name: str, root_path: str) -> int:
         """Create a new project.
@@ -121,13 +162,12 @@ class Database:
         Returns:
             Project ID.
         """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "INSERT INTO projects (name, root_path) VALUES (?, ?)",
-            (name, root_path)
-        )
-        self.conn.commit()
-        return cursor.lastrowid
+        with self.get_session() as session:
+            result = session.execute(
+                text("INSERT INTO projects (name, root_path) VALUES (:name, :root_path)"),
+                {"name": name, "root_path": root_path}
+            )
+            return result.lastrowid
 
     def get_project(self, project_id: int) -> Optional[dict]:
         """Get project by ID.
@@ -138,10 +178,13 @@ class Database:
         Returns:
             Project dict or None.
         """
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM projects WHERE id = ?", (project_id,))
-        row = cursor.fetchone()
-        return dict(row) if row else None
+        with self.get_session() as session:
+            result = session.execute(
+                text("SELECT * FROM projects WHERE id = :id"),
+                {"id": project_id}
+            )
+            row = result.fetchone()
+            return dict(row._mapping) if row else None
 
     def get_all_projects(self) -> list:
         """Get all projects.
@@ -149,9 +192,11 @@ class Database:
         Returns:
             List of project dicts.
         """
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM projects ORDER BY created_at DESC")
-        return [dict(row) for row in cursor.fetchall()]
+        with self.get_session() as session:
+            result = session.execute(
+                text("SELECT * FROM projects ORDER BY created_at DESC")
+            )
+            return [dict(row._mapping) for row in result.fetchall()]
 
     def create_tab(self, project_id: int, name: str, position: int) -> int:
         """Create a new tab for a project.
@@ -164,13 +209,12 @@ class Database:
         Returns:
             Tab ID.
         """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "INSERT INTO tabs (project_id, name, position) VALUES (?, ?, ?)",
-            (project_id, name, position)
-        )
-        self.conn.commit()
-        return cursor.lastrowid
+        with self.get_session() as session:
+            result = session.execute(
+                text("INSERT INTO tabs (project_id, name, position) VALUES (:project_id, :name, :position)"),
+                {"project_id": project_id, "name": name, "position": position}
+            )
+            return result.lastrowid
 
     def get_tabs(self, project_id: int) -> list:
         """Get all tabs for a project.
@@ -181,12 +225,12 @@ class Database:
         Returns:
             List of tab dicts.
         """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT * FROM tabs WHERE project_id = ? ORDER BY position",
-            (project_id,)
-        )
-        return [dict(row) for row in cursor.fetchall()]
+        with self.get_session() as session:
+            result = session.execute(
+                text("SELECT * FROM tabs WHERE project_id = :project_id ORDER BY position"),
+                {"project_id": project_id}
+            )
+            return [dict(row._mapping) for row in result.fetchall()]
 
     def add_block(
         self,
@@ -208,19 +252,19 @@ class Database:
         Returns:
             Block ID.
         """
-        cursor = self.conn.cursor()
-        tags_json = json.dumps(tags) if tags else None
-        cursor.execute(
-            """INSERT INTO blocks (tab_id, parent_id, type, content, tags)
-               VALUES (?, ?, ?, ?, ?)""",
-            (tab_id, parent_id, block_type, content, tags_json)
-        )
-        block_id = cursor.lastrowid
+        with self.get_session() as session:
+            tags_json = json.dumps(tags) if tags else None
+            result = session.execute(
+                text("""INSERT INTO blocks (tab_id, parent_id, type, content, tags)
+                   VALUES (:tab_id, :parent_id, :type, :content, :tags)"""),
+                {"tab_id": tab_id, "parent_id": parent_id, "type": block_type,
+                 "content": content, "tags": tags_json}
+            )
+            block_id = result.lastrowid
 
-        # Record in history
-        self._record_history(block_id, "create", {"content": content, "tags": tags})
-        self.conn.commit()
-        return block_id
+            # Record in history
+            self._record_history_in_session(session, block_id, "create", {"content": content, "tags": tags})
+            return block_id
 
     def get_block(self, block_id: int) -> Optional[dict]:
         """Get block by ID.
@@ -231,14 +275,17 @@ class Database:
         Returns:
             Block dict or None.
         """
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM blocks WHERE id = ?", (block_id,))
-        row = cursor.fetchone()
-        if row:
-            block = dict(row)
-            block["tags"] = json.loads(block["tags"]) if block["tags"] else []
-            return block
-        return None
+        with self.get_session() as session:
+            result = session.execute(
+                text("SELECT * FROM blocks WHERE id = :id"),
+                {"id": block_id}
+            )
+            row = result.fetchone()
+            if row:
+                block = dict(row._mapping)
+                block["tags"] = json.loads(block["tags"]) if block["tags"] else []
+                return block
+            return None
 
     def get_blocks_by_tab(self, tab_id: int) -> list:
         """Get all blocks for a tab.
@@ -249,17 +296,17 @@ class Database:
         Returns:
             List of block dicts.
         """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT * FROM blocks WHERE tab_id = ? ORDER BY created_at",
-            (tab_id,)
-        )
-        blocks = []
-        for row in cursor.fetchall():
-            block = dict(row)
-            block["tags"] = json.loads(block["tags"]) if block["tags"] else []
-            blocks.append(block)
-        return blocks
+        with self.get_session() as session:
+            result = session.execute(
+                text("SELECT * FROM blocks WHERE tab_id = :tab_id ORDER BY created_at"),
+                {"tab_id": tab_id}
+            )
+            blocks = []
+            for row in result.fetchall():
+                block = dict(row._mapping)
+                block["tags"] = json.loads(block["tags"]) if block["tags"] else []
+                blocks.append(block)
+            return blocks
 
     def update_block(
         self,
@@ -277,50 +324,48 @@ class Database:
         Returns:
             True if updated successfully.
         """
-        cursor = self.conn.cursor()
-
-        # Get current block
+        # Get current block first (outside transaction for read)
         old_block = self.get_block(block_id)
         if not old_block:
             return False
 
-        # Use explicit UPDATE queries to avoid dynamic SQL construction
-        updated_at = datetime.now().isoformat()
+        with self.get_session() as session:
+            # Use explicit UPDATE queries to avoid dynamic SQL construction
+            updated_at = datetime.now().isoformat()
 
-        if content is not None and tags is not None:
-            cursor.execute(
-                """UPDATE blocks
-                   SET content = ?, tags = ?, version = version + 1, updated_at = ?
-                   WHERE id = ?""",
-                (content, json.dumps(tags), updated_at, block_id)
-            )
-        elif content is not None:
-            cursor.execute(
-                """UPDATE blocks
-                   SET content = ?, version = version + 1, updated_at = ?
-                   WHERE id = ?""",
-                (content, updated_at, block_id)
-            )
-        elif tags is not None:
-            cursor.execute(
-                """UPDATE blocks
-                   SET tags = ?, version = version + 1, updated_at = ?
-                   WHERE id = ?""",
-                (json.dumps(tags), updated_at, block_id)
-            )
-        else:
-            return False
+            if content is not None and tags is not None:
+                session.execute(
+                    text("""UPDATE blocks
+                       SET content = :content, tags = :tags, version = version + 1, updated_at = :updated_at
+                       WHERE id = :id"""),
+                    {"content": content, "tags": json.dumps(tags), "updated_at": updated_at, "id": block_id}
+                )
+            elif content is not None:
+                session.execute(
+                    text("""UPDATE blocks
+                       SET content = :content, version = version + 1, updated_at = :updated_at
+                       WHERE id = :id"""),
+                    {"content": content, "updated_at": updated_at, "id": block_id}
+                )
+            elif tags is not None:
+                session.execute(
+                    text("""UPDATE blocks
+                       SET tags = :tags, version = version + 1, updated_at = :updated_at
+                       WHERE id = :id"""),
+                    {"tags": json.dumps(tags), "updated_at": updated_at, "id": block_id}
+                )
+            else:
+                return False
 
-        # Record in history
-        self._record_history(block_id, "edit", {
-            "old_content": old_block["content"],
-            "new_content": content,
-            "old_tags": old_block["tags"],
-            "new_tags": tags
-        })
+            # Record in history
+            self._record_history_in_session(session, block_id, "edit", {
+                "old_content": old_block["content"],
+                "new_content": content,
+                "old_tags": old_block["tags"],
+                "new_tags": tags
+            })
 
-        self.conn.commit()
-        return True
+            return True
 
     def delete_block(self, block_id: int) -> bool:
         """Delete a block.
@@ -331,20 +376,21 @@ class Database:
         Returns:
             True if deleted successfully.
         """
-        cursor = self.conn.cursor()
-
-        # Record deletion in history
+        # Get block for history (outside transaction for read)
         block = self.get_block(block_id)
-        if block:
-            self._record_history(block_id, "delete", {"content": block["content"]})
+        
+        with self.get_session() as session:
+            if block:
+                self._record_history_in_session(session, block_id, "delete", {"content": block["content"]})
 
-        # Delete associated data
-        cursor.execute("DELETE FROM block_assets WHERE block_id = ?", (block_id,))
-        cursor.execute("DELETE FROM dependencies WHERE src_block_id = ? OR dst_block_id = ?",
-                       (block_id, block_id))
-        cursor.execute("DELETE FROM blocks WHERE id = ?", (block_id,))
-        self.conn.commit()
-        return cursor.rowcount > 0
+            # Delete associated data
+            session.execute(text("DELETE FROM block_assets WHERE block_id = :id"), {"id": block_id})
+            session.execute(
+                text("DELETE FROM dependencies WHERE src_block_id = :id OR dst_block_id = :id"),
+                {"id": block_id}
+            )
+            result = session.execute(text("DELETE FROM blocks WHERE id = :id"), {"id": block_id})
+            return result.rowcount > 0
 
     def link_block_asset(self, block_id: int, asset_id: int, role: str = "preview"):
         """Link an asset to a block.
@@ -354,12 +400,11 @@ class Database:
             asset_id: Asset ID.
             role: Asset role (e.g., 'preview', 'full_clip', 'reference').
         """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "INSERT OR REPLACE INTO block_assets (block_id, asset_id, role) VALUES (?, ?, ?)",
-            (block_id, asset_id, role)
-        )
-        self.conn.commit()
+        with self.get_session() as session:
+            session.execute(
+                text("INSERT OR REPLACE INTO block_assets (block_id, asset_id, role) VALUES (:block_id, :asset_id, :role)"),
+                {"block_id": block_id, "asset_id": asset_id, "role": role}
+            )
 
     def get_block_assets(self, block_id: int) -> list:
         """Get all assets linked to a block.
@@ -370,13 +415,16 @@ class Database:
         Returns:
             List of asset dicts with role.
         """
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            SELECT a.*, ba.role FROM assets a
-            JOIN block_assets ba ON a.id = ba.asset_id
-            WHERE ba.block_id = ?
-        """, (block_id,))
-        return [dict(row) for row in cursor.fetchall()]
+        with self.get_session() as session:
+            result = session.execute(
+                text("""
+                SELECT a.*, ba.role FROM assets a
+                JOIN block_assets ba ON a.id = ba.asset_id
+                WHERE ba.block_id = :block_id
+            """),
+                {"block_id": block_id}
+            )
+            return [dict(row._mapping) for row in result.fetchall()]
 
     def add_dependency(self, src_block_id: int, dst_block_id: int, dep_type: str):
         """Add a dependency between blocks.
@@ -386,12 +434,11 @@ class Database:
             dst_block_id: Destination block ID.
             dep_type: Dependency type.
         """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "INSERT OR REPLACE INTO dependencies (src_block_id, dst_block_id, type) VALUES (?, ?, ?)",
-            (src_block_id, dst_block_id, dep_type)
-        )
-        self.conn.commit()
+        with self.get_session() as session:
+            session.execute(
+                text("INSERT OR REPLACE INTO dependencies (src_block_id, dst_block_id, type) VALUES (:src, :dst, :type)"),
+                {"src": src_block_id, "dst": dst_block_id, "type": dep_type}
+            )
 
     def get_dependencies(self, src_block_id: int) -> list:
         """Get all dependencies from a source block.
@@ -402,12 +449,12 @@ class Database:
         Returns:
             List of dependency dicts.
         """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT * FROM dependencies WHERE src_block_id = ?",
-            (src_block_id,)
-        )
-        return [dict(row) for row in cursor.fetchall()]
+        with self.get_session() as session:
+            result = session.execute(
+                text("SELECT * FROM dependencies WHERE src_block_id = :src"),
+                {"src": src_block_id}
+            )
+            return [dict(row._mapping) for row in result.fetchall()]
 
     def get_history(self, block_id: int) -> list:
         """Get history for a block.
@@ -418,30 +465,30 @@ class Database:
         Returns:
             List of history entries.
         """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT * FROM history WHERE block_id = ? ORDER BY timestamp DESC",
-            (block_id,)
-        )
-        history = []
-        for row in cursor.fetchall():
-            entry = dict(row)
-            entry["payload"] = json.loads(entry["payload"]) if entry["payload"] else {}
-            history.append(entry)
-        return history
+        with self.get_session() as session:
+            result = session.execute(
+                text("SELECT * FROM history WHERE block_id = :block_id ORDER BY timestamp DESC"),
+                {"block_id": block_id}
+            )
+            history = []
+            for row in result.fetchall():
+                entry = dict(row._mapping)
+                entry["payload"] = json.loads(entry["payload"]) if entry["payload"] else {}
+                history.append(entry)
+            return history
 
-    def _record_history(self, block_id: int, action: str, payload: dict):
-        """Record an action in history.
+    def _record_history_in_session(self, session, block_id: int, action: str, payload: dict):
+        """Record an action in history within an existing session.
 
         Args:
+            session: SQLAlchemy session.
             block_id: Block ID.
             action: Action type.
             payload: Action payload.
         """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "INSERT INTO history (block_id, action, payload) VALUES (?, ?, ?)",
-            (block_id, action, json.dumps(payload))
+        session.execute(
+            text("INSERT INTO history (block_id, action, payload) VALUES (:block_id, :action, :payload)"),
+            {"block_id": block_id, "action": action, "payload": json.dumps(payload)}
         )
 
     def invalidate_downstream(self, src_block_id: int):
@@ -461,4 +508,5 @@ class Database:
 
     def close(self):
         """Close database connection."""
-        self.conn.close()
+        self.Session.remove()
+        self.engine.dispose()
