@@ -497,14 +497,34 @@ class Database:
         Args:
             src_block_id: Source block ID.
         """
-        deps = self.get_dependencies(src_block_id)
-        for dep in deps:
-            block = self.get_block(dep["dst_block_id"])
-            if block:
-                tags = block.get("tags", [])
-                if "needs_regen" not in tags:
-                    tags.append("needs_regen")
-                    self.update_block(dep["dst_block_id"], tags=tags)
+        with self.get_session() as session:
+            # Get dependencies in same session
+            result = session.execute(
+                text("SELECT * FROM dependencies WHERE src_block_id = :src"),
+                {"src": src_block_id}
+            )
+            deps = [dict(row._mapping) for row in result.fetchall()]
+            
+            for dep in deps:
+                dst_block_id = dep["dst_block_id"]
+                # Get block in same session
+                result = session.execute(
+                    text("SELECT * FROM blocks WHERE id = :id"),
+                    {"id": dst_block_id}
+                )
+                row = result.fetchone()
+                if row:
+                    block = dict(row._mapping)
+                    tags = json.loads(block["tags"]) if block["tags"] else []
+                    if "needs_regen" not in tags:
+                        tags.append("needs_regen")
+                        updated_at = datetime.now().isoformat()
+                        session.execute(
+                            text("""UPDATE blocks
+                               SET tags = :tags, version = version + 1, updated_at = :updated_at
+                               WHERE id = :id"""),
+                            {"tags": json.dumps(tags), "updated_at": updated_at, "id": dst_block_id}
+                        )
 
     def close(self):
         """Close database connection."""
