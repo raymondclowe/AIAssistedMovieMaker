@@ -50,6 +50,14 @@ def init_session_state():
         st.session_state.asset_manager = None
     if "ai" not in st.session_state:
         st.session_state.ai = AIOperations()
+    if "ai_mode" not in st.session_state:
+        st.session_state.ai_mode = "draft"
+    if "selected_llm_model" not in st.session_state:
+        st.session_state.selected_llm_model = None
+    if "selected_image_model" not in st.session_state:
+        st.session_state.selected_image_model = None
+    if "selected_video_model" not in st.session_state:
+        st.session_state.selected_video_model = None
 
 
 def get_or_create_default_project():
@@ -88,18 +96,98 @@ def render_sidebar():
 
         st.markdown("---")
 
-        # Settings
-        st.subheader("⚙️ Settings")
-
-        # API Key input
-        api_key = st.text_input(
-            "OpenAI API Key",
-            type="password",
-            help="Enter your OpenAI API key for AI features"
+        # AI Provider Status
+        st.subheader("🤖 AI Providers")
+        status = st.session_state.ai.get_status()
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if status["openrouter"]:
+                st.success("✅ OpenRouter")
+            else:
+                st.error("❌ OpenRouter")
+        with col2:
+            if status["replicate"]:
+                st.success("✅ Replicate")
+            else:
+                st.error("❌ Replicate")
+        
+        # Mode selection
+        mode = st.radio(
+            "Generation Mode",
+            options=["draft", "final"],
+            index=0 if st.session_state.ai_mode == "draft" else 1,
+            help="Draft: Fast & cheap models. Final: Best quality models.",
+            horizontal=True
         )
-        if api_key:
-            st.session_state.ai = AIOperations(api_key)
-            st.success("API key set!")
+        if mode != st.session_state.ai_mode:
+            st.session_state.ai_mode = mode
+            st.session_state.ai.set_mode(mode)
+            # Reset model selections when mode changes
+            st.session_state.selected_llm_model = None
+            st.session_state.selected_image_model = None
+            st.session_state.selected_video_model = None
+        
+        # Model selection expander
+        with st.expander("🔧 Model Selection", expanded=False):
+            # LLM Model
+            if status["openrouter"]:
+                llm_models = st.session_state.ai.get_available_llm_models()
+                mode_llm_models = llm_models.get(st.session_state.ai_mode, [])
+                if mode_llm_models:
+                    llm_options = [m["id"] for m in mode_llm_models[:20]]  # Limit to 20
+                    current_llm = st.session_state.selected_llm_model
+                    if current_llm not in llm_options:
+                        current_llm = llm_options[0] if llm_options else None
+                    
+                    selected_llm = st.selectbox(
+                        "LLM Model",
+                        options=llm_options,
+                        index=llm_options.index(current_llm) if current_llm in llm_options else 0,
+                        help="Model for text generation"
+                    )
+                    if selected_llm != st.session_state.selected_llm_model:
+                        st.session_state.selected_llm_model = selected_llm
+                        st.session_state.ai.set_llm_model(selected_llm)
+            
+            # Image Model
+            if status["replicate"]:
+                image_models = st.session_state.ai.get_available_image_models()
+                mode_image_models = image_models.get(st.session_state.ai_mode, [])
+                if mode_image_models:
+                    image_options = [m["id"] for m in mode_image_models[:10]]
+                    current_image = st.session_state.selected_image_model
+                    if current_image not in image_options:
+                        current_image = image_options[0] if image_options else None
+                    
+                    selected_image = st.selectbox(
+                        "Image Model",
+                        options=image_options,
+                        index=image_options.index(current_image) if current_image in image_options else 0,
+                        help="Model for image generation"
+                    )
+                    if selected_image != st.session_state.selected_image_model:
+                        st.session_state.selected_image_model = selected_image
+                        st.session_state.ai.set_image_model(selected_image)
+                
+                # Video Model
+                video_models = st.session_state.ai.get_available_video_models()
+                mode_video_models = video_models.get(st.session_state.ai_mode, [])
+                if mode_video_models:
+                    video_options = [m["id"] for m in mode_video_models[:10]]
+                    current_video = st.session_state.selected_video_model
+                    if current_video not in video_options:
+                        current_video = video_options[0] if video_options else None
+                    
+                    selected_video = st.selectbox(
+                        "Video Model",
+                        options=video_options,
+                        index=video_options.index(current_video) if current_video in video_options else 0,
+                        help="Model for video generation"
+                    )
+                    if selected_video != st.session_state.selected_video_model:
+                        st.session_state.selected_video_model = selected_video
+                        st.session_state.ai.set_video_model(selected_video)
 
         st.markdown("---")
 
@@ -113,10 +201,13 @@ def render_sidebar():
             4. Upload or generate assets
             5. Review and assemble your movie
 
-            **Tips:**
-            - Tag important content with 'keep' or 'love'
-            - Use dependencies to link related content
-            - All changes are saved automatically
+            **API Keys (set in environment):**
+            - `OPENROUTER_API_KEY` - For text generation
+            - `REPLICATE_API_KEY` - For image/video generation
+            
+            **Generation Modes:**
+            - **Draft**: Fast, cheap models for iteration
+            - **Final**: Best quality models for production
             """)
 
 

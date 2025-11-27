@@ -2,128 +2,619 @@
 
 This module provides the AIOperations class for making calls to
 AI models (LLM, image generation, video generation, audio generation).
+
+Supports:
+- OpenRouter.ai for text/LLM generation
+- Replicate.com for video and image generation
 """
 
 import os
-from typing import Optional
+import time
+import json
+from typing import Optional, List, Dict, Any
+import httpx
 
 
-class AIOperations:
-    """AI operations manager for LLM and generation tasks."""
+# Price thresholds for model categorization (USD per token)
+# Models below DRAFT_PRICE_THRESHOLD are considered "draft" quality (cheap/fast)
+# Models above are considered "final" quality (expensive/best)
+DRAFT_PRICE_THRESHOLD = 0.001  # $0.001 per 1k tokens
 
+# Model name patterns that indicate draft/fast models
+DRAFT_MODEL_PATTERNS = ["schnell", "turbo", "fast", "lite", "lightning"]
+
+
+def get_api_key(primary_key: str, fallback_key: str) -> Optional[str]:
+    """Get API key from environment, checking both primary and fallback names.
+    
+    Args:
+        primary_key: Primary environment variable name.
+        fallback_key: Fallback environment variable name (e.g., COPILOT_ prefixed).
+    
+    Returns:
+        API key if found, None otherwise.
+    """
+    return os.getenv(primary_key) or os.getenv(fallback_key)
+
+
+class OpenRouterProvider:
+    """OpenRouter.ai provider for LLM text generation."""
+    
+    BASE_URL = "https://openrouter.ai/api/v1"
+    
     def __init__(self, api_key: Optional[str] = None):
-        """Initialize AI operations.
-
+        """Initialize OpenRouter provider.
+        
         Args:
-            api_key: OpenAI API key (optional, will check env if not provided).
+            api_key: OpenRouter API key (optional, will check env if not provided).
         """
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self._client = None
-
-    def _get_client(self):
-        """Get or create OpenAI client."""
-        if self._client is None:
-            try:
-                from openai import OpenAI
-                self._client = OpenAI(api_key=self.api_key)
-            except ImportError:
-                raise ImportError(
-                    "OpenAI package not installed. "
-                    "Install with: pip install openai"
+        self.api_key = api_key or get_api_key("OPENROUTER_API_KEY", "COPILOT_OPENROUTER_API_KEY")
+        self._models_cache = None
+        self._models_cache_time = 0
+        self._cache_ttl = 300  # 5 minutes cache
+    
+    def is_configured(self) -> bool:
+        """Check if the provider is properly configured."""
+        return self.api_key is not None
+    
+    def get_models(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
+        """Fetch available models from OpenRouter.
+        
+        Args:
+            force_refresh: Force refresh the cache.
+            
+        Returns:
+            List of model dictionaries with id, name, pricing, etc.
+        """
+        if not self.is_configured():
+            return []
+        
+        # Return cached if valid
+        if not force_refresh and self._models_cache and (time.time() - self._models_cache_time < self._cache_ttl):
+            return self._models_cache
+        
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                response = client.get(
+                    f"{self.BASE_URL}/models",
+                    headers={"Authorization": f"Bearer {self.api_key}"}
                 )
-            except Exception as e:
-                raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
-        return self._client
-
-    async def llm_generate(
+                response.raise_for_status()
+                data = response.json()
+                self._models_cache = data.get("data", [])
+                self._models_cache_time = time.time()
+                return self._models_cache
+        except Exception as e:
+            print(f"Error fetching OpenRouter models: {e}")
+            return []
+    
+    def get_models_by_category(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Get models organized by cost category (draft vs final).
+        
+        Returns:
+            Dictionary with 'draft' and 'final' model lists.
+        """
+        models = self.get_models()
+        
+        draft_models = []
+        final_models = []
+        
+        for model in models:
+            model_id = model.get("id", "")
+            pricing = model.get("pricing", {})
+            prompt_price = float(pricing.get("prompt", "0") or "0")
+            
+            model_info = {
+                "id": model_id,
+                "name": model.get("name", model_id),
+                "context_length": model.get("context_length", 4096),
+                "prompt_price": prompt_price,
+                "description": model.get("description", "")
+            }
+            
+            # Categorize by price threshold
+            if prompt_price < DRAFT_PRICE_THRESHOLD:
+                draft_models.append(model_info)
+            else:
+                final_models.append(model_info)
+        
+        # Sort by price
+        draft_models.sort(key=lambda x: x["prompt_price"])
+        final_models.sort(key=lambda x: x["prompt_price"])
+        
+        return {"draft": draft_models, "final": final_models}
+    
+    def generate(
         self,
         prompt: str,
         system_prompt: Optional[str] = None,
-        model: str = "gpt-4o",
+        model: str = "meta-llama/llama-3.2-3b-instruct:free",
         max_tokens: int = 4096,
         temperature: float = 0.7
     ) -> str:
-        """Generate text using LLM.
-
+        """Generate text using OpenRouter.
+        
         Args:
             prompt: User prompt.
             system_prompt: System prompt (optional).
-            model: Model name.
+            model: Model ID to use.
             max_tokens: Maximum tokens in response.
             temperature: Sampling temperature.
-
+            
         Returns:
             Generated text.
         """
-        if not self.api_key:
-            # Return mock response if no API key
-            return self._mock_llm_response(prompt)
-
+        if not self.is_configured():
+            raise RuntimeError("OpenRouter API key not configured")
+        
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        
         try:
-            client = self._get_client()
-            messages = []
-
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-
-            messages.append({"role": "user", "content": prompt})
-
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature
-            )
-
-            return response.choices[0].message.content
-
+            with httpx.Client(timeout=120.0) as client:
+                response = client.post(
+                    f"{self.BASE_URL}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://github.com/raymondclowe/AIAssistedMovieMaker",
+                        "X-Title": "AI Movie Maker"
+                    },
+                    json={
+                        "model": model,
+                        "messages": messages,
+                        "max_tokens": max_tokens,
+                        "temperature": temperature
+                    }
+                )
+                response.raise_for_status()
+                data = response.json()
+                return data["choices"][0]["message"]["content"]
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"OpenRouter API error: {e.response.status_code} - {e.response.text}")
         except Exception as e:
-            raise RuntimeError(f"LLM generation failed: {e}")
+            raise RuntimeError(f"OpenRouter generation failed: {e}")
 
+
+class ReplicateProvider:
+    """Replicate.com provider for image and video generation."""
+    
+    BASE_URL = "https://api.replicate.com/v1"
+    
+    # Default models for different tasks
+    DEFAULT_VIDEO_MODEL = "minimax/video-01"
+    DEFAULT_IMAGE_MODEL = "black-forest-labs/flux-schnell"
+    
+    def __init__(self, api_key: Optional[str] = None):
+        """Initialize Replicate provider.
+        
+        Args:
+            api_key: Replicate API key (optional, will check env if not provided).
+        """
+        self.api_key = api_key or get_api_key("REPLICATE_API_KEY", "COPILOT_REPLICATE_API_KEY")
+        self._models_cache = {}
+        self._models_cache_time = {}
+        self._cache_ttl = 300  # 5 minutes cache
+    
+    def is_configured(self) -> bool:
+        """Check if the provider is properly configured."""
+        return self.api_key is not None
+    
+    def _get_headers(self) -> Dict[str, str]:
+        """Get headers for Replicate API requests."""
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+    
+    def get_models(self, collection: str = "text-to-video", force_refresh: bool = False) -> List[Dict[str, Any]]:
+        """Fetch available models from Replicate collections.
+        
+        Args:
+            collection: Collection name (e.g., 'text-to-video', 'text-to-image').
+            force_refresh: Force refresh the cache.
+            
+        Returns:
+            List of model dictionaries.
+        """
+        if not self.is_configured():
+            return []
+        
+        cache_key = collection
+        if not force_refresh and cache_key in self._models_cache:
+            if time.time() - self._models_cache_time.get(cache_key, 0) < self._cache_ttl:
+                return self._models_cache[cache_key]
+        
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                response = client.get(
+                    f"{self.BASE_URL}/collections/{collection}",
+                    headers=self._get_headers()
+                )
+                response.raise_for_status()
+                data = response.json()
+                models = data.get("models", [])
+                self._models_cache[cache_key] = models
+                self._models_cache_time[cache_key] = time.time()
+                return models
+        except Exception as e:
+            print(f"Error fetching Replicate models for {collection}: {e}")
+            return []
+    
+    def get_video_models(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Get video generation models organized by quality tier.
+        
+        Returns:
+            Dictionary with 'draft' and 'final' model lists.
+        """
+        models = self.get_models("text-to-video")
+        
+        draft_models = []
+        final_models = []
+        
+        for model in models:
+            owner = model.get("owner", "")
+            name = model.get("name", "")
+            model_id = f"{owner}/{name}"
+            
+            model_info = {
+                "id": model_id,
+                "name": model.get("name", model_id),
+                "description": model.get("description", ""),
+                "run_count": model.get("run_count", 0)
+            }
+            
+            # Categorize by name patterns using shared constant
+            is_draft = any(pattern in name.lower() for pattern in DRAFT_MODEL_PATTERNS)
+            
+            if is_draft:
+                draft_models.append(model_info)
+            else:
+                final_models.append(model_info)
+        
+        # Sort by popularity (run_count)
+        draft_models.sort(key=lambda x: x.get("run_count", 0), reverse=True)
+        final_models.sort(key=lambda x: x.get("run_count", 0), reverse=True)
+        
+        return {"draft": draft_models, "final": final_models}
+    
+    def get_image_models(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Get image generation models organized by quality tier.
+        
+        Returns:
+            Dictionary with 'draft' and 'final' model lists.
+        """
+        models = self.get_models("text-to-image")
+        
+        draft_models = []
+        final_models = []
+        
+        for model in models:
+            owner = model.get("owner", "")
+            name = model.get("name", "")
+            model_id = f"{owner}/{name}"
+            
+            model_info = {
+                "id": model_id,
+                "name": model.get("name", model_id),
+                "description": model.get("description", ""),
+                "run_count": model.get("run_count", 0)
+            }
+            
+            # Categorize by name patterns using shared constant
+            is_draft = any(pattern in name.lower() for pattern in DRAFT_MODEL_PATTERNS)
+            
+            if is_draft:
+                draft_models.append(model_info)
+            else:
+                final_models.append(model_info)
+        
+        # Sort by popularity (run_count)
+        draft_models.sort(key=lambda x: x.get("run_count", 0), reverse=True)
+        final_models.sort(key=lambda x: x.get("run_count", 0), reverse=True)
+        
+        return {"draft": draft_models, "final": final_models}
+    
+    def _wait_for_prediction(self, prediction_url: str, timeout: int = 300) -> Dict[str, Any]:
+        """Wait for a Replicate prediction to complete.
+        
+        Args:
+            prediction_url: URL to poll for prediction status.
+            timeout: Maximum time to wait in seconds.
+            
+        Returns:
+            Completed prediction data.
+        """
+        start_time = time.time()
+        
+        with httpx.Client(timeout=30.0) as client:
+            while time.time() - start_time < timeout:
+                response = client.get(prediction_url, headers=self._get_headers())
+                response.raise_for_status()
+                prediction = response.json()
+                
+                status = prediction.get("status")
+                if status == "succeeded":
+                    return prediction
+                elif status == "failed":
+                    error = prediction.get("error", "Unknown error")
+                    raise RuntimeError(f"Prediction failed: {error}")
+                elif status == "canceled":
+                    raise RuntimeError("Prediction was canceled")
+                
+                # Wait before polling again
+                time.sleep(2)
+        
+        raise RuntimeError(f"Prediction timed out after {timeout} seconds")
+    
+    def generate_video(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        **kwargs
+    ) -> str:
+        """Generate a video using Replicate.
+        
+        Args:
+            prompt: Text prompt for video generation.
+            model: Model ID to use (optional, uses default if not provided).
+            **kwargs: Additional model-specific parameters.
+            
+        Returns:
+            URL of the generated video.
+        """
+        if not self.is_configured():
+            raise RuntimeError("Replicate API key not configured")
+        
+        model = model or self.DEFAULT_VIDEO_MODEL
+        
+        # Prepare input based on model
+        model_input = {"prompt": prompt}
+        model_input.update(kwargs)
+        
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                # Create prediction
+                # Replicate accepts either 'model' (owner/name) or 'version' (full hash)
+                # We use 'model' for official models without version specification
+                response = client.post(
+                    f"{self.BASE_URL}/predictions",
+                    headers=self._get_headers(),
+                    json={
+                        "model": model,
+                        "input": model_input
+                    }
+                )
+                response.raise_for_status()
+                prediction = response.json()
+                
+                # Wait for completion
+                prediction_url = prediction.get("urls", {}).get("get")
+                if not prediction_url:
+                    prediction_url = f"{self.BASE_URL}/predictions/{prediction['id']}"
+                
+                result = self._wait_for_prediction(prediction_url)
+                output = result.get("output")
+                
+                if isinstance(output, list):
+                    return output[0] if output else None
+                return output
+                
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"Replicate API error: {e.response.status_code} - {e.response.text}")
+        except Exception as e:
+            raise RuntimeError(f"Video generation failed: {e}")
+    
+    def generate_image(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        **kwargs
+    ) -> str:
+        """Generate an image using Replicate.
+        
+        Args:
+            prompt: Text prompt for image generation.
+            model: Model ID to use (optional, uses default if not provided).
+            **kwargs: Additional model-specific parameters.
+            
+        Returns:
+            URL of the generated image.
+        """
+        if not self.is_configured():
+            raise RuntimeError("Replicate API key not configured")
+        
+        model = model or self.DEFAULT_IMAGE_MODEL
+        
+        # Prepare input based on model
+        model_input = {"prompt": prompt}
+        model_input.update(kwargs)
+        
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                # Create prediction
+                # Replicate accepts either 'model' (owner/name) or 'version' (full hash)
+                # We use 'model' for official models without version specification
+                response = client.post(
+                    f"{self.BASE_URL}/predictions",
+                    headers=self._get_headers(),
+                    json={
+                        "model": model,
+                        "input": model_input
+                    }
+                )
+                response.raise_for_status()
+                prediction = response.json()
+                
+                # Wait for completion
+                prediction_url = prediction.get("urls", {}).get("get")
+                if not prediction_url:
+                    prediction_url = f"{self.BASE_URL}/predictions/{prediction['id']}"
+                
+                result = self._wait_for_prediction(prediction_url, timeout=120)
+                output = result.get("output")
+                
+                if isinstance(output, list):
+                    return output[0] if output else None
+                return output
+                
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"Replicate API error: {e.response.status_code} - {e.response.text}")
+        except Exception as e:
+            raise RuntimeError(f"Image generation failed: {e}")
+
+
+class AIOperations:
+    """AI operations manager for LLM and generation tasks.
+    
+    Supports multiple providers:
+    - OpenRouter for text generation
+    - Replicate for image and video generation
+    """
+
+    def __init__(
+        self,
+        openrouter_key: Optional[str] = None,
+        replicate_key: Optional[str] = None,
+        mode: str = "draft"
+    ):
+        """Initialize AI operations.
+
+        Args:
+            openrouter_key: OpenRouter API key (optional, will check env).
+            replicate_key: Replicate API key (optional, will check env).
+            mode: Generation mode - "draft" for cheap/fast, "final" for best quality.
+        """
+        self.openrouter = OpenRouterProvider(openrouter_key)
+        self.replicate = ReplicateProvider(replicate_key)
+        self.mode = mode
+        
+        # Selected models (can be overridden)
+        self._selected_llm_model = None
+        self._selected_image_model = None
+        self._selected_video_model = None
+    
+    def is_configured(self) -> bool:
+        """Check if any provider is configured."""
+        return self.openrouter.is_configured() or self.replicate.is_configured()
+    
+    def get_status(self) -> Dict[str, bool]:
+        """Get configuration status for each provider."""
+        return {
+            "openrouter": self.openrouter.is_configured(),
+            "replicate": self.replicate.is_configured()
+        }
+    
+    def set_mode(self, mode: str):
+        """Set the generation mode.
+        
+        Args:
+            mode: "draft" for cheap/fast models, "final" for best quality.
+        """
+        if mode not in ("draft", "final"):
+            raise ValueError("Mode must be 'draft' or 'final'")
+        self.mode = mode
+    
+    def get_available_llm_models(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Get available LLM models from OpenRouter."""
+        return self.openrouter.get_models_by_category()
+    
+    def get_available_image_models(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Get available image generation models from Replicate."""
+        return self.replicate.get_image_models()
+    
+    def get_available_video_models(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Get available video generation models from Replicate."""
+        return self.replicate.get_video_models()
+    
+    def set_llm_model(self, model_id: str):
+        """Set the LLM model to use."""
+        self._selected_llm_model = model_id
+    
+    def set_image_model(self, model_id: str):
+        """Set the image generation model to use."""
+        self._selected_image_model = model_id
+    
+    def set_video_model(self, model_id: str):
+        """Set the video generation model to use."""
+        self._selected_video_model = model_id
+    
+    def _get_default_llm_model(self) -> str:
+        """Get default LLM model based on mode."""
+        models = self.get_available_llm_models()
+        mode_models = models.get(self.mode, [])
+        
+        if mode_models:
+            return mode_models[0]["id"]
+        
+        # Fallback defaults
+        if self.mode == "draft":
+            return "meta-llama/llama-3.2-3b-instruct:free"
+        return "anthropic/claude-3.5-sonnet"
+    
     def llm_generate_sync(
         self,
         prompt: str,
         system_prompt: Optional[str] = None,
-        model: str = "gpt-4o",
+        model: Optional[str] = None,
         max_tokens: int = 4096,
         temperature: float = 0.7
     ) -> str:
-        """Synchronous version of llm_generate.
+        """Synchronous text generation using OpenRouter.
 
         Args:
             prompt: User prompt.
             system_prompt: System prompt (optional).
-            model: Model name.
+            model: Model ID (optional, uses selected or default).
             max_tokens: Maximum tokens in response.
             temperature: Sampling temperature.
 
         Returns:
             Generated text.
         """
-        if not self.api_key:
+        if not self.openrouter.is_configured():
             # Return mock response if no API key
             return self._mock_llm_response(prompt)
+        
+        model = model or self._selected_llm_model or self._get_default_llm_model()
+        
+        return self.openrouter.generate(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature
+        )
+    
+    async def llm_generate(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7
+    ) -> str:
+        """Async text generation (currently wraps sync version).
 
-        try:
-            client = self._get_client()
-            messages = []
+        Args:
+            prompt: User prompt.
+            system_prompt: System prompt (optional).
+            model: Model ID (optional).
+            max_tokens: Maximum tokens in response.
+            temperature: Sampling temperature.
 
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-
-            messages.append({"role": "user", "content": prompt})
-
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature
-            )
-
-            return response.choices[0].message.content
-
-        except Exception as e:
-            raise RuntimeError(f"LLM generation failed: {e}")
+        Returns:
+            Generated text.
+        """
+        return self.llm_generate_sync(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature
+        )
 
     def _mock_llm_response(self, prompt: str) -> str:
         """Generate a mock response when no API key is available.
@@ -278,7 +769,7 @@ Finding the truth, no matter where it leads
 ## Notes
 This shot sets the mood and establishes the setting before we cut to our protagonist.
 
-*Note: This is a placeholder shot description. Connect your OpenAI API key for AI-generated content.*"""
+*Note: This is a placeholder shot description. Connect your API keys for AI-generated content.*"""
 
         else:
             return f"""# AI Response
@@ -287,103 +778,109 @@ Thank you for your prompt. Here's a response to: "{prompt[:100]}..."
 
 This is a placeholder response. To get actual AI-generated content, please:
 
-1. Set your OpenAI API key in the environment variable `OPENAI_API_KEY`
-2. Or pass it when initializing the AIOperations class
+1. Set your OpenRouter API key: `OPENROUTER_API_KEY`
+2. Set your Replicate API key: `REPLICATE_API_KEY`
 
-Once configured, the app will use GPT-4o to generate creative content for your movie project.
+Once configured, the app will use live AI models for content generation.
 
-*Note: The AI features of this app require a valid OpenAI API key.*"""
-
-    async def generate_image(
-        self,
-        prompt: str,
-        size: str = "1024x1024",
-        quality: str = "standard",
-        style: str = "natural"
-    ) -> bytes:
-        """Generate an image using DALL-E.
-
-        Args:
-            prompt: Image prompt.
-            size: Image size (1024x1024, 1792x1024, or 1024x1792).
-            quality: Quality (standard or hd).
-            style: Style (natural or vivid).
-
-        Returns:
-            Image bytes.
-        """
-        if not self.api_key:
-            raise RuntimeError(
-                "No API key configured. "
-                "Set OPENAI_API_KEY environment variable."
-            )
-
-        try:
-            import httpx
-            client = self._get_client()
-
-            response = client.images.generate(
-                model="dall-e-3",
-                prompt=prompt,
-                size=size,
-                quality=quality,
-                style=style,
-                n=1,
-                response_format="url"
-            )
-
-            # Download the image
-            image_url = response.data[0].url
-            async with httpx.AsyncClient() as http_client:
-                img_response = await http_client.get(image_url)
-                return img_response.content
-
-        except Exception as e:
-            raise RuntimeError(f"Image generation failed: {e}")
+*Note: The AI features of this app require valid API keys.*"""
 
     def generate_image_sync(
         self,
         prompt: str,
-        size: str = "1024x1024",
-        quality: str = "standard",
-        style: str = "natural"
-    ) -> bytes:
-        """Synchronous version of generate_image.
+        model: Optional[str] = None,
+        **kwargs
+    ) -> str:
+        """Generate an image using Replicate.
 
         Args:
             prompt: Image prompt.
-            size: Image size.
-            quality: Quality.
-            style: Style.
+            model: Model ID (optional, uses selected or default).
+            **kwargs: Additional model-specific parameters.
 
         Returns:
-            Image bytes.
+            URL of the generated image.
         """
-        if not self.api_key:
+        if not self.replicate.is_configured():
             raise RuntimeError(
-                "No API key configured. "
-                "Set OPENAI_API_KEY environment variable."
+                "Replicate API key not configured. "
+                "Set REPLICATE_API_KEY environment variable."
             )
+        
+        model = model or self._selected_image_model
+        return self.replicate.generate_image(prompt=prompt, model=model, **kwargs)
+    
+    async def generate_image(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        **kwargs
+    ) -> str:
+        """Generate an image (async wrapper for sync version).
 
-        try:
-            import httpx
-            client = self._get_client()
+        Args:
+            prompt: Image prompt.
+            model: Model ID (optional).
+            **kwargs: Additional model-specific parameters.
 
-            response = client.images.generate(
-                model="dall-e-3",
-                prompt=prompt,
-                size=size,
-                quality=quality,
-                style=style,
-                n=1,
-                response_format="url"
+        Returns:
+            URL of the generated image.
+        """
+        return self.generate_image_sync(prompt=prompt, model=model, **kwargs)
+    
+    def generate_video_sync(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        **kwargs
+    ) -> str:
+        """Generate a video using Replicate.
+
+        Args:
+            prompt: Video prompt.
+            model: Model ID (optional, uses selected or default).
+            **kwargs: Additional model-specific parameters.
+
+        Returns:
+            URL of the generated video.
+        """
+        if not self.replicate.is_configured():
+            raise RuntimeError(
+                "Replicate API key not configured. "
+                "Set REPLICATE_API_KEY environment variable."
             )
+        
+        model = model or self._selected_video_model
+        return self.replicate.generate_video(prompt=prompt, model=model, **kwargs)
+    
+    async def generate_video(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        **kwargs
+    ) -> str:
+        """Generate a video (async wrapper for sync version).
 
-            # Download the image
-            image_url = response.data[0].url
-            with httpx.Client() as http_client:
-                img_response = http_client.get(image_url)
-                return img_response.content
+        Args:
+            prompt: Video prompt.
+            model: Model ID (optional).
+            **kwargs: Additional model-specific parameters.
 
-        except Exception as e:
-            raise RuntimeError(f"Image generation failed: {e}")
+        Returns:
+            URL of the generated video.
+        """
+        return self.generate_video_sync(prompt=prompt, model=model, **kwargs)
+    
+    def download_asset(self, url: str) -> bytes:
+        """Download an asset from a URL.
+        
+        Args:
+            url: URL of the asset to download.
+            
+        Returns:
+            Asset bytes.
+        """
+        with httpx.Client(timeout=60.0) as client:
+            response = client.get(url)
+            response.raise_for_status()
+            return response.content

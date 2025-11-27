@@ -7,12 +7,11 @@ An AI-powered application to help you create movies from concept to final cut. T
 - **Complete Workflow**: 12 tabs covering the full movie-making pipeline
   - Ideation → Plot → Screenplay → Shooting Script → Cast → Locations → Props → Art Direction → Cinematography → Shots → Asset Library → Review
 
-- **AI-Powered Generation**: Generate content at each stage using GPT-4o
-  - Plot outlines from concepts
-  - Screenplay scenes from plot points
-  - Character profiles
-  - Location descriptions
-  - Shot descriptions
+- **AI-Powered Generation**: Generate content at each stage using multiple AI providers
+  - **OpenRouter.ai** - Text generation (plot outlines, scenes, characters, etc.)
+  - **Replicate.com** - Image and video generation
+  
+- **Draft vs Final Mode**: Choose between fast/cheap models for iteration or best-quality models for production
 
 - **Asset Management**: Hash-based deduplication for images, videos, and audio
 
@@ -33,9 +32,13 @@ cd AIAssistedMovieMaker
 pip install -r requirements.txt
 ```
 
-3. (Optional) Set your OpenAI API key for AI features:
+3. Set your API keys for AI features:
 ```bash
-export OPENAI_API_KEY=your_api_key_here
+# OpenRouter for text generation
+export OPENROUTER_API_KEY=your_openrouter_key
+
+# Replicate for image/video generation
+export REPLICATE_API_KEY=your_replicate_key
 ```
 
 ## Usage
@@ -65,8 +68,18 @@ The app will open in your browser at `http://localhost:8501`.
 ### AI Features
 
 - Click "✨ Generate" buttons to create AI content
-- Works without API key (shows placeholder content)
-- Full AI generation requires OpenAI API key
+- Works without API keys (shows placeholder content)
+- **Draft Mode**: Uses fast, cheap models for rapid iteration
+- **Final Mode**: Uses best-quality models for production content
+
+### Supported API Keys
+
+The app looks for these environment variables (checks both primary and COPILOT_ prefixed versions):
+
+| Provider | Primary Key | Fallback Key |
+|----------|-------------|--------------|
+| OpenRouter | `OPENROUTER_API_KEY` | `COPILOT_OPENROUTER_API_KEY` |
+| Replicate | `REPLICATE_API_KEY` | `COPILOT_REPLICATE_API_KEY` |
 
 ## Project Structure
 
@@ -77,7 +90,7 @@ AIAssistedMovieMaker/
 │   ├── __init__.py
 │   ├── db.py              # SQLite database operations
 │   ├── assets.py          # Asset management
-│   └── ai.py              # AI operations (LLM, image gen)
+│   └── ai.py              # AI operations (OpenRouter, Replicate)
 ├── requirements.txt       # Python dependencies
 ├── SPEC.md               # Detailed specification
 └── README.md             # This file
