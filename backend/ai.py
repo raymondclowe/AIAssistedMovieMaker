@@ -58,8 +58,13 @@ class OpenRouterProvider:
         
         Args:
             api_key: OpenRouter API key.
+        
+        Raises:
+            ValueError: If api_key is empty or contains only whitespace.
         """
-        self.api_key = api_key
+        if not api_key or not api_key.strip():
+            raise ValueError("API key cannot be empty")
+        self.api_key = api_key.strip()
         # Clear cache when key changes
         self._models_cache = None
         self._models_cache_time = 0
