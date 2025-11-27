@@ -7,6 +7,7 @@ Run with: streamlit run app.py
 import streamlit as st
 from pathlib import Path
 import json
+from typing import Optional
 
 from backend.db import Database
 from backend.assets import AssetManager
@@ -816,7 +817,7 @@ def render_review_tab(tab_id: int):
             )
 
 
-def get_tab_by_name(name: str) -> dict:
+def get_tab_by_name(name: str) -> Optional[dict]:
     """Get tab by name."""
     tabs = st.session_state.db.get_tabs(st.session_state.project_id)
     for tab in tabs:

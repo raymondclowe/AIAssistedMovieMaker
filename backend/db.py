@@ -284,41 +284,43 @@ class Database:
         if not old_block:
             return False
 
-        # Build update query
-        updates = []
-        params = []
+        # Use explicit UPDATE queries to avoid dynamic SQL construction
+        updated_at = datetime.now().isoformat()
 
-        if content is not None:
-            updates.append("content = ?")
-            params.append(content)
-
-        if tags is not None:
-            updates.append("tags = ?")
-            params.append(json.dumps(tags))
-
-        if updates:
-            updates.append("version = version + 1")
-            updates.append("updated_at = ?")
-            params.append(datetime.now().isoformat())
-            params.append(block_id)
-
+        if content is not None and tags is not None:
             cursor.execute(
-                f"UPDATE blocks SET {', '.join(updates)} WHERE id = ?",
-                params
+                """UPDATE blocks
+                   SET content = ?, tags = ?, version = version + 1, updated_at = ?
+                   WHERE id = ?""",
+                (content, json.dumps(tags), updated_at, block_id)
             )
+        elif content is not None:
+            cursor.execute(
+                """UPDATE blocks
+                   SET content = ?, version = version + 1, updated_at = ?
+                   WHERE id = ?""",
+                (content, updated_at, block_id)
+            )
+        elif tags is not None:
+            cursor.execute(
+                """UPDATE blocks
+                   SET tags = ?, version = version + 1, updated_at = ?
+                   WHERE id = ?""",
+                (json.dumps(tags), updated_at, block_id)
+            )
+        else:
+            return False
 
-            # Record in history
-            self._record_history(block_id, "edit", {
-                "old_content": old_block["content"],
-                "new_content": content,
-                "old_tags": old_block["tags"],
-                "new_tags": tags
-            })
+        # Record in history
+        self._record_history(block_id, "edit", {
+            "old_content": old_block["content"],
+            "new_content": content,
+            "old_tags": old_block["tags"],
+            "new_tags": tags
+        })
 
-            self.conn.commit()
-            return True
-
-        return False
+        self.conn.commit()
+        return True
 
     def delete_block(self, block_id: int) -> bool:
         """Delete a block.
