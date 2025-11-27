@@ -21,16 +21,16 @@ class Database:
             db_path: Path to the SQLite database file.
         """
         self.db_path = db_path
-        self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
         self._init_schema()
 
     def _init_schema(self):
         """Initialize database schema."""
-        cursor = self.conn.cursor()
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
 
-        # Projects table
-        cursor.execute("""
+            # Projects table
+            cursor.execute("""
             CREATE TABLE IF NOT EXISTS projects (
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
