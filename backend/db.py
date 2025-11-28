@@ -456,6 +456,22 @@ class Database:
             )
             return [dict(row._mapping) for row in result.fetchall()]
 
+    def get_reverse_dependencies(self, dst_block_id: int) -> list:
+        """Get all dependencies pointing to a destination block.
+
+        Args:
+            dst_block_id: Destination block ID.
+
+        Returns:
+            List of dependency dicts where this block is the destination.
+        """
+        with self.get_session() as session:
+            result = session.execute(
+                text("SELECT * FROM dependencies WHERE dst_block_id = :dst"),
+                {"dst": dst_block_id}
+            )
+            return [dict(row._mapping) for row in result.fetchall()]
+
     def get_history(self, block_id: int) -> list:
         """Get history for a block.
 
@@ -476,6 +492,20 @@ class Database:
                 entry["payload"] = json.loads(entry["payload"]) if entry["payload"] else {}
                 history.append(entry)
             return history
+
+    def _record_history_entry(self, block_id: int, action: str, payload: dict):
+        """Record an action in history (public method for external use).
+
+        Args:
+            block_id: Block ID.
+            action: Action type (e.g., "create", "edit", "model_used").
+            payload: Action payload as a dict.
+        """
+        with self.get_session() as session:
+            session.execute(
+                text("INSERT INTO history (block_id, action, payload) VALUES (:block_id, :action, :payload)"),
+                {"block_id": block_id, "action": action, "payload": json.dumps(payload)}
+            )
 
     def _record_history_in_session(self, session, block_id: int, action: str, payload: dict):
         """Record an action in history within an existing session.
