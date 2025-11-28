@@ -493,6 +493,20 @@ class Database:
                 history.append(entry)
             return history
 
+    def _record_history_entry(self, block_id: int, action: str, payload: dict):
+        """Record an action in history (public method for external use).
+
+        Args:
+            block_id: Block ID.
+            action: Action type (e.g., "create", "edit", "model_used").
+            payload: Action payload as a dict.
+        """
+        with self.get_session() as session:
+            session.execute(
+                text("INSERT INTO history (block_id, action, payload) VALUES (:block_id, :action, :payload)"),
+                {"block_id": block_id, "action": action, "payload": json.dumps(payload)}
+            )
+
     def _record_history_in_session(self, session, block_id: int, action: str, payload: dict):
         """Record an action in history within an existing session.
 

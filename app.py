@@ -87,16 +87,20 @@ def get_or_create_default_project():
         # Create default project
         project_id = db.create_project("My Movie", str(default_project_dir))
         # Create tabs for data storage (internal, not shown as UI tabs)
-        tab_names = ["Story", "Design", "Shooting", "Generate", "CreativeNotes"]
+        tab_names = ["Story", "Design", "Shooting", "Generate", "Notes"]
         for i, tab_name in enumerate(tab_names):
             db.create_tab(project_id, tab_name, i)
     else:
         project_id = projects[0]["id"]
-        # Ensure CreativeNotes tab exists for existing projects
+        # Ensure Notes tab exists for existing projects
         tabs = db.get_tabs(project_id)
         tab_names = [t["name"] for t in tabs]
-        if "CreativeNotes" not in tab_names:
-            db.create_tab(project_id, "CreativeNotes", len(tabs))
+        if "Notes" not in tab_names:
+            # Check for old name and update references
+            if "CreativeNotes" in tab_names:
+                pass  # Keep existing CreativeNotes for backward compatibility
+            else:
+                db.create_tab(project_id, "Notes", len(tabs))
 
     return db, project_id, default_project_dir
 
@@ -179,7 +183,7 @@ def render_sidebar():
             "Quality Mode",
             options=mode_options,
             index=current_mode_index,
-            help="Draft: Fast & cheap (Llama 3.2). Medium: Balanced (GPT-4o). Final: Best quality (Claude Sonnet).",
+            help="Draft: Fast & cheap models. Medium: Balanced quality/cost. Final: Best quality models. Check Model Selection for current models.",
             horizontal=True
         )
         if mode != st.session_state.ai_mode:
@@ -291,9 +295,18 @@ def get_tab_by_name(name: str) -> Optional[dict]:
     return None
 
 
+def get_notes_tab() -> Optional[dict]:
+    """Get the Notes tab, handling both old and new naming conventions."""
+    # Try new name first, then fall back to old name for backward compatibility
+    notes_tab = get_tab_by_name("Notes")
+    if not notes_tab:
+        notes_tab = get_tab_by_name("CreativeNotes")
+    return notes_tab
+
+
 def get_creative_notes_for_category(category: str) -> list:
     """Get creative notes for a specific category (e.g., 'scene', 'dialogue', 'shot')."""
-    notes_tab = get_tab_by_name("CreativeNotes")
+    notes_tab = get_notes_tab()
     if not notes_tab:
         return []
     blocks = st.session_state.db.get_blocks_by_tab(notes_tab["id"])
@@ -305,6 +318,33 @@ def truncate_content(content: str, max_length: int = 60) -> str:
     if len(content) > max_length:
         return content[:max_length] + "..."
     return content
+
+
+def add_block_with_model_tracking(tab_id: int, block_type: str, content: str, model_type: str = "llm") -> int:
+    """Add a block and record which AI model was used for generation.
+    
+    Args:
+        tab_id: Tab ID to add block to
+        block_type: Type of block (e.g., "concept", "outline", "scene")
+        content: Generated content
+        model_type: Type of model used ("llm", "image", "video")
+        
+    Returns:
+        The new block ID
+    """
+    block_id = st.session_state.db.add_block(tab_id, block_type, content)
+    
+    # Record the model used in history
+    model_used = st.session_state.ai.get_last_used_model(model_type)
+    if model_used:
+        # Add a history entry recording the model used
+        st.session_state.db._record_history_entry(
+            block_id, 
+            "model_used", 
+            {"model": model_used, "model_type": model_type}
+        )
+    
+    return block_id
 
 
 def render_creative_notes_selector(category: str, form_key: str) -> Optional[str]:
@@ -465,7 +505,7 @@ def render_block_with_feedback(block: dict, block_type_name: str, revision_promp
 
 def render_creative_notes_section():
     """Render the Creative Notes section in the sidebar."""
-    notes_tab = get_tab_by_name("CreativeNotes")
+    notes_tab = get_notes_tab()
     if not notes_tab:
         return
     
@@ -581,8 +621,8 @@ def render_concept_section(tab_id: int):
             with st.spinner("Generating expanded concept..."):
                 prompt = f"Expand this movie concept into a detailed premise with genre, tone, themes, and potential story hooks:\n\n{content}"
                 expanded = st.session_state.ai.llm_generate_sync(prompt)
-                # Store the expanded concept with metadata linking to original
-                block_id = st.session_state.db.add_block(tab_id, "concept", expanded)
+                # Store the expanded concept with model tracking
+                block_id = add_block_with_model_tracking(tab_id, "concept", expanded, "llm")
                 # Also save the original logline for reference if not already saved
                 logline_id = st.session_state.db.add_block(tab_id, "logline", content)
                 st.session_state.db.add_dependency(logline_id, block_id, "logline_to_concept")
@@ -628,7 +668,8 @@ def render_concept_section(tab_id: int):
                 display_content = block["content"]
             else:
                 # Show historical version (index > 0 means looking at older versions)
-                if current_version_idx > 0 and current_version_idx <= len(content_history):
+                # Use < instead of <= to prevent index out of bounds
+                if current_version_idx > 0 and current_version_idx < len(content_history) + 1:
                     payload = content_history[current_version_idx - 1].get("payload", {})
                     display_content = payload.get("old_content") or payload.get("content") or block["content"]
                 else:
@@ -695,6 +736,7 @@ def render_concept_section(tab_id: int):
                     
                     # Get the original logline if available (concept is the destination of the dependency)
                     original_logline = ""
+                    using_fallback_logline = False
                     deps = st.session_state.db.get_reverse_dependencies(block_id)
                     for dep in deps:
                         if dep.get("type") == "logline_to_concept":
@@ -705,6 +747,10 @@ def render_concept_section(tab_id: int):
                     # Also check fallback - use first logline if no dependency found
                     if not original_logline and loglines:
                         original_logline = loglines[0]["content"]  # Use first logline as fallback
+                        using_fallback_logline = True
+                    
+                    if using_fallback_logline:
+                        st.warning("No direct logline found for this concept. Using the first available logline as a fallback.")
                     
                     with st.form(f"notes_form_{block_id}"):
                         notes = st.text_area(
@@ -768,7 +814,7 @@ def render_plot_section(tab_id: int):
                 if scene_note:
                     prompt += f"\n\nIncorporate this specific idea from the creator:\n{scene_note}"
                 outline = st.session_state.ai.llm_generate_sync(prompt)
-                block_id = st.session_state.db.add_block(tab_id, "outline", outline)
+                block_id = add_block_with_model_tracking(tab_id, "outline", outline, "llm")
                 st.session_state.db.add_dependency(source_block["id"], block_id, "concept_to_plot")
                 st.success("Plot outline generated!")
                 st.rerun()
@@ -865,7 +911,7 @@ Plot point:
                 if dialogue_note:
                     prompt += f"\n\nInclude this specific dialogue from the creator:\n{dialogue_note}"
                 scene = st.session_state.ai.llm_generate_sync(prompt)
-                block_id = st.session_state.db.add_block(tab_id, "scene", scene)
+                block_id = add_block_with_model_tracking(tab_id, "scene", scene, "llm")
                 st.session_state.db.add_dependency(source_block["id"], block_id, "plot_to_scene")
                 st.success("Scene generated!")
                 st.rerun()

@@ -564,6 +564,28 @@ class AIOperations:
         self._selected_llm_model = None
         self._selected_image_model = None
         self._selected_video_model = None
+        
+        # Track last used model for diagnostics/repeatability
+        self._last_used_llm_model = None
+        self._last_used_image_model = None
+        self._last_used_video_model = None
+    
+    def get_last_used_model(self, model_type: str = "llm") -> Optional[str]:
+        """Get the last model used for a specific type.
+        
+        Args:
+            model_type: Type of model - "llm", "image", or "video"
+            
+        Returns:
+            The model ID that was last used, or None if not available.
+        """
+        if model_type == "llm":
+            return self._last_used_llm_model
+        elif model_type == "image":
+            return self._last_used_image_model
+        elif model_type == "video":
+            return self._last_used_video_model
+        return None
     
     def is_configured(self) -> bool:
         """Check if any provider is configured."""
@@ -658,9 +680,12 @@ class AIOperations:
         """
         if not self.openrouter.is_configured():
             # Return mock response if no API key
+            self._last_used_llm_model = "mock"
             return self._mock_llm_response(prompt)
         
         model = model or self._selected_llm_model or self._get_default_llm_model()
+        # Track the model used for diagnostics/repeatability
+        self._last_used_llm_model = model
         
         return self.openrouter.generate(
             prompt=prompt,
@@ -891,6 +916,8 @@ Once configured, the app will use live AI models for content generation.
             )
         
         model = model or self._selected_image_model
+        # Track the model used for diagnostics/repeatability
+        self._last_used_image_model = model
         return self.replicate.generate_image(prompt=prompt, model=model, **kwargs)
     
     async def generate_image(
@@ -939,6 +966,8 @@ Once configured, the app will use live AI models for content generation.
             )
         
         model = model or self._selected_video_model
+        # Track the model used for diagnostics/repeatability
+        self._last_used_video_model = model
         return self.replicate.generate_video(prompt=prompt, model=model, **kwargs)
     
     async def generate_video(
